@@ -27,7 +27,6 @@ from cs336_basics.transformer import (
 )
 from cs336_basics.train_transformer import (
     cross_entropy_loss,
-    get_batch,
     save_checkpoint,
     load_checkpoint,
 )
@@ -36,7 +35,7 @@ from cs336_basics.optimizer import (
     get_lr_cosine_schedule,
     gradient_clipping,
 )
-
+from cs336_basics.data import get_batch
 
 def run_linear(
     d_in: int,
