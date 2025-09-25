@@ -1,0 +1,6 @@
+from datetime import datetime
+
+project_name = "cs336_assignment1"
+
+def get_current_datetime():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

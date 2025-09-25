@@ -5,6 +5,8 @@ import time
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
+import wandb
+
 from cs336_basics.train_transformer import (
     cross_entropy_loss,
     save_checkpoint,
@@ -15,11 +17,16 @@ from cs336_basics.transformer import (
 )
 from cs336_basics.optimizer import (
     AdamW,
+    get_lr_cosine_schedule,
     gradient_clipping,
 )
 from cs336_basics.data import (
     get_batch,
     DatasetForTransformer,
+)
+from cs336_basics.helper import (
+    get_current_datetime,
+    project_name,
 )
 
 logging.basicConfig(
@@ -38,15 +45,19 @@ def train_one_epoch(
     data_loader: DataLoader,
     max_l2_norm: float,
     epoch: int,
-):
+    global_step: int,
+) -> (float, int):
     model.train()
     total_loss = 0.0
     start_time = time.time()
 
     for batch_idx, (x, y) in enumerate(data_loader):
-        # ToDo: replace lr with `get_lr_cosine_schedule`
-        logits = model(x)
+        global_step += 1
 
+        # ToDo: use lr_cosine_schedule
+        # lr = get_lr_cosine_schedule(global_step, max_l2_norm)
+
+        logits = model(x)
         opt.zero_grad()
 
         vocab_size = logits.shape[-1]
@@ -61,6 +72,13 @@ def train_one_epoch(
                 f"Batch {batch_idx}/{len(data_loader)}"
                 f"Loss: {avg_loss:.4f}"
                 f"Time: {time.time() - start_time:.2f}s")
+            wandb.log({
+                "batch_loss": loss.item(),
+                "avg_batch_loss": avg_loss,
+                "epoch": epoch + 1,
+                "step": global_step,
+                "wallclock_time": time.time() - start_time
+            })
 
     avg_epoch_loss = total_loss / len(data_loader)
     return avg_epoch_loss
@@ -85,7 +103,14 @@ def parse_args():
     return args
 
 def main(args: argparse.Namespace):
+    wandb.init(
+        project=project_name,
+        name="transformer" + get_current_datetime(),
+        config=vars(args),
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wandb.config.update({"device": str(device)})
 
     model = TransformerLM(
         vocab_size=args.vocab_size,
@@ -98,6 +123,7 @@ def main(args: argparse.Namespace):
         dtype=torch.float32,
         rope_theta=args.rope_theta,
     )
+    wandb.watch(model, log="all")
 
     opt = AdamW(model.parameters(), lr=args.lr)
 
@@ -119,10 +145,14 @@ def main(args: argparse.Namespace):
         trained_epoch = load_checkpoint(args.checkpoint_path, model, opt)
         start_epoch = trained_epoch + 1
 
+    experiment_start_time = time.time()
+    global_step = 0
+
     for epoch in range(start_epoch, args.epochs):
         epoch_start_time = time.time()
 
-        train_loss = train_one_epoch(model, opt, train_loader, args.max_l2_norm, epoch)
+        train_loss, global_step = train_one_epoch(model, opt, train_loader,
+                args.max_l2_norm, epoch, global_step)
 
         epoch_time = time.time() - epoch_start_time
         logger.info(
@@ -130,7 +160,17 @@ def main(args: argparse.Namespace):
             f"Train Loss: {train_loss:.4f} | "
             f"Time: {epoch_time:.2f}s"
         )
+        wandb.log({
+            "epoch_loss": train_loss,
+            "epoch_time": epoch_time,
+            "epoch": epoch + 1,
+            "global_step": global_step,
+            "wallclock_time": time.time() - experiment_start_time
+        })
         save_checkpoint(model, opt, args.checkpoint_path, epoch)
+
+    wandb.finish()
+    logger.info(f"Total training finished: {time.time() - experiment_start_time:.2f}s")
 
 if __name__ == "__main__":
     args = parse_args()
