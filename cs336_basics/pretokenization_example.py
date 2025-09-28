@@ -61,7 +61,7 @@ def find_chunk_boundaries(
 #         chunk = f.read(end - start).decode("utf-8", errors="ignore")
 #         # Run pre-tokenization on your chunk and store the counts for each pre-token
 
-expected_chunk_size = 5*1024*1024 # 5Mb
+expected_chunk_size = 10*1024*1024 # 10Mb
 
 def get_expected_chunk_num(
     file: BinaryIO,

@@ -1,9 +1,11 @@
 from multiprocessing import Pool
 from typing import Iterable, Iterator
+from tqdm import tqdm
 from cs336_basics.train_bpe import (
     default_chunk_generator,
     token_from_chunk_generator,
     word2bytes,
+    load_vocab_and_merges,
 )
 
 
@@ -67,7 +69,8 @@ class BpeTokenizer:
         special_tokens: list[str] | None = None,
     ):
         """Create a BPE tokenizer from vocabulary and merges files."""
-        pass
+        vocab, merges = load_vocab_and_merges(vocab_filepath, merges_filepath)
+        return cls(vocab, merges, special_tokens)
 
     def supplement_special_tokens(
         self,
@@ -89,16 +92,22 @@ class BpeTokenizer:
     def encode(self, text: str) -> list[int]:
         """Encode an input text into a sequence of token IDs."""
         res: list[int] = []
-        for pre_token in token_from_chunk_generator(text, self.special_tokens, False):
-            if pre_token in self.special_tokens:
-                # 特殊token需要转换为bytes
-                special_token_bytes = pre_token.encode("utf-8")
-                res.append(self.byte_to_id[special_token_bytes])
-            else:
-                token_tuple = word2bytes(pre_token)
-                for merge_tuple in self.merges:
-                    token_tuple = merge_tuple_pair(token_tuple, merge_tuple)
-                res.extend(self.tokens_to_ids(token_tuple))
+        pre_tokens = list(token_from_chunk_generator(text, self.special_tokens, False))
+
+        with tqdm(
+            total=len(pre_tokens), desc="Encoding", unit="token", leave=False
+        ) as pbar:
+            for pre_token in pre_tokens:
+                if pre_token in self.special_tokens:
+                    # 特殊token需要转换为bytes
+                    special_token_bytes = pre_token.encode("utf-8")
+                    res.append(self.byte_to_id[special_token_bytes])
+                else:
+                    token_tuple = word2bytes(pre_token)
+                    for merge_tuple in self.merges:
+                        token_tuple = merge_tuple_pair(token_tuple, merge_tuple)
+                    res.extend(self.tokens_to_ids(token_tuple))
+                pbar.update(1)
         return res
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
@@ -112,4 +121,4 @@ class BpeTokenizer:
     def decode(self, ids: list[int]) -> str:
         """Decode a sequence of token IDs into text."""
         encoded = b"".join(self.vocab[token_id] for token_id in ids)
-        return encoded.decode('utf-8',errors='replace')
+        return encoded.decode("utf-8", errors="replace")

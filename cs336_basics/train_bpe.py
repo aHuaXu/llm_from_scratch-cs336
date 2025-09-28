@@ -1,7 +1,9 @@
+import json
 import multiprocessing
 import os
 import regex as re
 from multiprocessing import Pool
+from pathlib import Path
 from typing import Generator, Tuple, List, Pattern, Union
 from tqdm import tqdm
 from cs336_basics.pretokenization_example import (
@@ -127,12 +129,10 @@ def train_bpe(
     # dict[tuple[bytes], int]
     pre_token_counts: dict[tuple[bytes, ...], int] = {}
 
-    separator = "|".join([re.escape(token) for token in special_tokens])
-    separator_pat = re.compile(separator)
-
     # 2. Pre-tokenization
+    print("start to pre-tokenization")
     num_processes = (
-        2  # test_train_bpe_speed will fail in windows if it's set with 4 ...
+        multiprocessing.cpu_count()  # test_train_bpe_speed will fail in windows if it's set with 4 ...
     )
     with Pool(processes=num_processes) as pool:
         results = pool.starmap(
@@ -141,9 +141,9 @@ def train_bpe(
         for one_chunk_count in results:
             for token, count in one_chunk_count.items():
                 pre_token_counts[token] = pre_token_counts.get(token, 0) + count
-    # print("pre_token_counts:{}".format(pre_token_counts))
 
     # 3. count the initial token counts
+    print("start to count token pairs counts")
     token_pairs_counts: dict[tuple[bytes, bytes], int] = {}
     merges: list[tuple[bytes, bytes]] = []
     for pre_token, count in pre_token_counts.items():
@@ -156,7 +156,7 @@ def train_bpe(
     total_merges = vocab_size - len(vocab)
 
     # Create progress bar
-    with tqdm(total=total_merges, desc="Training BPE", unit="merge") as pbar:
+    with tqdm(total=total_merges, desc="Merge token pairs", unit="merge") as pbar:
         while len(vocab) < vocab_size:
             # get the most frequent pair, if there are multiple pairs with the same frequency, choose the lexicographically greater pair
             most_frequent_pair, _ = max(
@@ -205,10 +205,85 @@ def train_bpe(
 
             # Update progress bar
             pbar.update(1)
-            pbar.set_postfix(
-                {"vocab_size": len(vocab), "remaining_pairs": len(token_pairs_counts)}
-            )
+            pbar.set_postfix({"vocab_size": len(vocab)})
 
+    # Save vocab and merges to files
+    input_path_obj = Path(input_path)
+    vocab_path = input_path_obj.with_name(f"{input_path_obj.stem}_vocab.json")
+    merges_path = input_path_obj.with_name(f"{input_path_obj.stem}_merges.txt")
+    save_vocab_and_merges(vocab, merges, str(vocab_path), str(merges_path))
+
+    return vocab, merges
+
+def get_vocab_merges_path(input_path: str | os.PathLike) -> tuple[str, str]:
+    input_path_obj = Path(input_path)
+    vocab_path = input_path_obj.with_name(f"{input_path_obj.stem}_vocab.json")
+    merges_path = input_path_obj.with_name(f"{input_path_obj.stem}_merges.txt")
+    return str(vocab_path), str(merges_path)
+
+def save_vocab_and_merges(
+    vocab: dict[int, bytes],
+    merges: list[tuple[bytes, bytes]],
+    vocab_filepath: str,
+    merges_filepath: str,
+):
+    """Save vocabulary and merges to JSON files."""
+    import base64
+
+    # Save vocab as JSON (convert bytes to base64 for JSON compatibility)
+    vocab_json = {}
+    for token_id, token_bytes in vocab.items():
+        vocab_json[str(token_id)] = base64.b64encode(token_bytes).decode("ascii")
+
+    with open(vocab_filepath, "w", encoding="utf-8") as f:
+        json.dump(vocab_json, f, indent=2, ensure_ascii=False)
+
+    # Save merges as JSON (convert bytes to base64)
+    merges_json = []
+    for merge_pair in merges:
+        merges_json.append(
+            [
+                base64.b64encode(merge_pair[0]).decode("ascii"),
+                base64.b64encode(merge_pair[1]).decode("ascii"),
+            ]
+        )
+
+    with open(merges_filepath, "w", encoding="utf-8") as f:
+        json.dump(merges_json, f, indent=2, ensure_ascii=False)
+
+    print(f"Saved vocab to {vocab_filepath}")
+    print(f"Saved merges to {merges_filepath}")
+
+
+def load_vocab_and_merges(
+    vocab_filepath: str,
+    merges_filepath: str,
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """Load vocabulary and merges from JSON files."""
+    import base64
+
+    # Load vocab from JSON
+    with open(vocab_filepath, "r", encoding="utf-8") as f:
+        vocab_json = json.load(f)
+
+    vocab = {}
+    for token_id_str, token_b64 in vocab_json.items():
+        token_id = int(token_id_str)
+        token_bytes = base64.b64decode(token_b64.encode("ascii"))
+        vocab[token_id] = token_bytes
+
+    # Load merges from JSON
+    with open(merges_filepath, "r", encoding="utf-8") as f:
+        merges_json = json.load(f)
+
+    merges = []
+    for merge_pair_b64 in merges_json:
+        token1_bytes = base64.b64decode(merge_pair_b64[0].encode("ascii"))
+        token2_bytes = base64.b64decode(merge_pair_b64[1].encode("ascii"))
+        merges.append((token1_bytes, token2_bytes))
+
+    print(f"Loaded vocab from {vocab_filepath}")
+    print(f"Loaded merges from {merges_filepath}")
     return vocab, merges
 
 
