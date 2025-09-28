@@ -3,6 +3,7 @@ import os
 import regex as re
 from multiprocessing import Pool
 from typing import Generator, Tuple, List, Pattern, Union
+from tqdm import tqdm
 from cs336_basics.pretokenization_example import (
     find_chunk_boundaries,
     get_expected_chunk_num,
@@ -11,6 +12,7 @@ from cs336_basics.pretokenization_example import (
 PAT = re.compile(
     r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 )
+
 
 def init_vocab(special_tokens: list[str]) -> dict[int, bytes]:
     vocab = {i: bytes([i]) for i in range(256)}
@@ -42,6 +44,7 @@ def chunk_generator(
             chunk = chunk.replace("\r\n", "\n")  # 兼容windows
             yield chunk, special_tokens
 
+
 def default_chunk_generator(
     input_path: str | os.PathLike,
     chunk_num: int,
@@ -51,6 +54,7 @@ def default_chunk_generator(
         input_path, chunk_num, split_consider_memory=split_consider_memory
     ):
         yield chunk
+
 
 def token_from_chunk_generator(
     chunk: str,
@@ -73,6 +77,7 @@ def token_from_chunk_generator(
                 token = match.group()
                 yield token
 
+
 def count_one_chunk(
     chunk: str,
     special_tokens: List[str],
@@ -86,6 +91,7 @@ def count_one_chunk(
             continue
         pre_token_counts[token_tuple] = pre_token_counts.get(token_tuple, 0) + 1
     return pre_token_counts
+
 
 def train_bpe(
     input_path: str | os.PathLike,
@@ -125,7 +131,9 @@ def train_bpe(
     separator_pat = re.compile(separator)
 
     # 2. Pre-tokenization
-    num_processes = 2   # test_train_bpe_speed will fail in windows if it's set with 4 ...
+    num_processes = (
+        2  # test_train_bpe_speed will fail in windows if it's set with 4 ...
+    )
     with Pool(processes=num_processes) as pool:
         results = pool.starmap(
             count_one_chunk, chunk_generator(input_path, 4, special_tokens)
@@ -144,51 +152,62 @@ def train_bpe(
             token_pairs_counts[pair] = token_pairs_counts.get(pair, 0) + count
 
     # 4. Merges
-    while len(vocab) < vocab_size:
-        # get the most frequent pair, if there are multiple pairs with the same frequency, choose the lexicographically greater pair
-        most_frequent_pair, _ = max(
-            token_pairs_counts.items(), key=lambda x: (x[1], x[0])
-        )
-        # print("most_frequent_pair:{}, token_pairs_counts:{}".format(most_frequent_pair, token_pairs_counts))
+    # Calculate total merges needed
+    total_merges = vocab_size - len(vocab)
 
-        merges.append(most_frequent_pair)
-        merged_token = most_frequent_pair[0] + most_frequent_pair[1]
-        vocab[len(vocab)] = merged_token
+    # Create progress bar
+    with tqdm(total=total_merges, desc="Training BPE", unit="merge") as pbar:
+        while len(vocab) < vocab_size:
+            # get the most frequent pair, if there are multiple pairs with the same frequency, choose the lexicographically greater pair
+            most_frequent_pair, _ = max(
+                token_pairs_counts.items(), key=lambda x: (x[1], x[0])
+            )
+            # print("most_frequent_pair:{}, token_pairs_counts:{}".format(most_frequent_pair, token_pairs_counts))
 
-        # replace the pre_token with the merged token
-        for pre_token, count in list(pre_token_counts.items()):
-            n = len(pre_token)
-            if most_frequent_pair not in zip(pre_token[:-1], pre_token[1:]):
-                continue
+            merges.append(most_frequent_pair)
+            merged_token = most_frequent_pair[0] + most_frequent_pair[1]
+            vocab[len(vocab)] = merged_token
 
-            # generate the new pre_token
-            new_pre_token: list[bytes] = []
-            i = 0
-            while i < n:
-                # match the most frequent pair
-                if (
-                    i < n - 1
-                    and pre_token[i] == most_frequent_pair[0]
-                    and pre_token[i + 1] == most_frequent_pair[1]
-                ):
-                    new_pre_token.append(merged_token)
-                    i += 2
-                else:
-                    new_pre_token.append(pre_token[i])
-                    i += 1
+            # replace the pre_token with the merged token
+            for pre_token, count in list(pre_token_counts.items()):
+                n = len(pre_token)
+                if most_frequent_pair not in zip(pre_token[:-1], pre_token[1:]):
+                    continue
 
-            # clear pre_token pair count
-            for pair in zip(pre_token[:-1], pre_token[1:]):
-                token_pairs_counts[pair] -= count
-                if token_pairs_counts[pair] == 0:
-                    del token_pairs_counts[pair]
-            # count the new_pre_token pair count
-            for pair in zip(new_pre_token[:-1], new_pre_token[1:]):
-                token_pairs_counts[pair] = token_pairs_counts.get(pair, 0) + count
+                # generate the new pre_token
+                new_pre_token: list[bytes] = []
+                i = 0
+                while i < n:
+                    # match the most frequent pair
+                    if (
+                        i < n - 1
+                        and pre_token[i] == most_frequent_pair[0]
+                        and pre_token[i + 1] == most_frequent_pair[1]
+                    ):
+                        new_pre_token.append(merged_token)
+                        i += 2
+                    else:
+                        new_pre_token.append(pre_token[i])
+                        i += 1
 
-            # update the pre_token_counts with the new_pre_token
-            pre_token_counts[tuple(new_pre_token)] = count
-            del pre_token_counts[pre_token]
+                # clear pre_token pair count
+                for pair in zip(pre_token[:-1], pre_token[1:]):
+                    token_pairs_counts[pair] -= count
+                    if token_pairs_counts[pair] == 0:
+                        del token_pairs_counts[pair]
+                # count the new_pre_token pair count
+                for pair in zip(new_pre_token[:-1], new_pre_token[1:]):
+                    token_pairs_counts[pair] = token_pairs_counts.get(pair, 0) + count
+
+                # update the pre_token_counts with the new_pre_token
+                pre_token_counts[tuple(new_pre_token)] = count
+                del pre_token_counts[pre_token]
+
+            # Update progress bar
+            pbar.update(1)
+            pbar.set_postfix(
+                {"vocab_size": len(vocab), "remaining_pairs": len(token_pairs_counts)}
+            )
 
     return vocab, merges
 
