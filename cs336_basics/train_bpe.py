@@ -132,7 +132,7 @@ def train_bpe(
     # 2. Pre-tokenization
     print("start to pre-tokenization")
     num_processes = (
-        multiprocessing.cpu_count()  # test_train_bpe_speed will fail in windows if it's set with 4 ...
+        2 # test_train_bpe_speed will fail in windows if it's set with 4 ...
     )
     with Pool(processes=num_processes) as pool:
         results = pool.starmap(

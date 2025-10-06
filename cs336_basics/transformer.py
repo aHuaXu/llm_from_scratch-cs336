@@ -50,7 +50,7 @@ class TransformerBlock(nn.Module):
     # x.shape: (batch_size, seq_len, d_model)
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         token_positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0)
-        token_positions = token_positions.repeat(x.shape[0], 1)
+        # token_positions = token_positions.repeat(x.shape[0], 1)
         y = x + self.attn(self.norm1(x), token_positions)
         return y + self.ffn(self.norm2(y))
     

@@ -1,5 +1,5 @@
 from multiprocessing import Pool
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, List
 from tqdm import tqdm
 from cs336_basics.train_bpe import (
     default_chunk_generator,
@@ -7,40 +7,6 @@ from cs336_basics.train_bpe import (
     word2bytes,
     load_vocab_and_merges,
 )
-
-
-def merge_tuple_pair(
-    original: tuple[bytes, ...], target: tuple[bytes, bytes]
-) -> tuple[bytes, ...]:
-    """
-    Replace all occurrences of the target (bytes, bytes) subtuple in the original tuple
-    with the concatenated result of the two bytes elements (bytes1 + bytes2).
-
-    Args:
-        original: The original tuple containing bytes elements (tuple[bytes, ...])
-        target: The specific (bytes, bytes) subtuple to be merged
-
-    Returns:
-        A new tuple with all target subtuples replaced by their concatenated result
-    """
-    original_list = list(original)
-    result = []
-    merged = target[0] + target[1]
-    i = 0
-
-    while i < len(original_list):
-        if (
-            i + 1 < len(original_list)
-            and (original_list[i], original_list[i + 1]) == target
-        ):
-            result.append(merged)
-            i += 2
-        else:
-            result.append(original_list[i])
-            i += 1
-
-    return tuple(result)
-
 
 class BpeTokenizer:
     def __init__(
@@ -58,6 +24,8 @@ class BpeTokenizer:
         self.byte_to_id: dict[bytes, int] = {
             v: k for k, v in self.vocab.items()
         }  # reserve vocab map
+
+        self.merges_priority_map: dict[tuple[bytes, bytes], int] = {pair: i for i, pair in enumerate(self.merges)}
 
         self.supplement_special_tokens(special_tokens)
 
@@ -86,7 +54,40 @@ class BpeTokenizer:
                 self.vocab[num] = token
                 self.byte_to_id[token] = num
 
-    def tokens_to_ids(self, tokens: Iterable[bytes]) -> list[int]:
+    def _get_bpe_merges(self, pre_token: str) -> tuple[bytes, ...]:
+        """
+        对字节片段进行BPE编码，返回字节列表
+        """
+        parts: tuple[bytes, ...] = word2bytes(pre_token)
+        while len(parts) > 1:
+            # 查找所有可能的合并对
+            pairs = set()
+            for i in range(len(parts) - 1):
+                pair = (parts[i], parts[i + 1])
+                if pair in self.merges_priority_map:
+                    pairs.add(pair)
+
+            if not pairs:
+                break
+
+            # 找到优先级最高的合并对
+            best_pair = min(pairs, key=lambda pair: self.merges_priority_map[pair])
+
+            # 执行合并
+            new_parts = []
+            i = 0
+            while i < len(parts):
+                if i < len(parts) - 1 and (parts[i], parts[i + 1]) == best_pair:
+                    new_parts.append(parts[i] + parts[i + 1])
+                    i += 2
+                else:
+                    new_parts.append(parts[i])
+                    i += 1
+            parts = tuple(new_parts)
+
+        return parts
+
+    def _tokens_to_ids(self, tokens: Iterable[bytes]) -> list[int]:
         return [self.byte_to_id[token] for token in tokens]
 
     def encode(self, text: str) -> list[int]:
@@ -103,10 +104,8 @@ class BpeTokenizer:
                     special_token_bytes = pre_token.encode("utf-8")
                     res.append(self.byte_to_id[special_token_bytes])
                 else:
-                    token_tuple = word2bytes(pre_token)
-                    for merge_tuple in self.merges:
-                        token_tuple = merge_tuple_pair(token_tuple, merge_tuple)
-                    res.extend(self.tokens_to_ids(token_tuple))
+                    token_tuple = self._get_bpe_merges(pre_token)
+                    res.extend(self._tokens_to_ids(token_tuple))
                 pbar.update(1)
         return res
 

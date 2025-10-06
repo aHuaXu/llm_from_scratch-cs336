@@ -141,18 +141,22 @@ class RotaryPositionalEmbedding(nn.Module):
         # (max_seq_len, dk//2)
         pos_theta = pos * thetas # broadcast
 
+        # print(f"pos_theta.shape: {pos_theta.shape}")
+
         self.register_buffer('rope_cos', torch.cos(pos_theta), persistent=False)
         self.register_buffer('rope_sin', torch.sin(pos_theta), persistent=False)
 
     # x.shape: (..., seq_len, d_k)
     # token_positions shape: (..., seq_len)
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
+        # print(f"x.shape: {x.shape}, token_positions.shape: {token_positions.shape}")
         *batch_dim, seq_len, d_k = x.shape
 
         x_even, x_odd = x[..., ::2], x[..., 1::2]
 
         # cos,sin shape: (..., seq_len, d_k//2)
         cos, sin = self.rope_cos[token_positions], self.rope_sin[token_positions]
+        # print(f"cos.shape: {cos.shape}, sin.shape: {sin.shape}")
 
         new_x_even, new_x_odd = cos * x_even - sin * x_odd, cos * x_odd + sin * x_even
 
