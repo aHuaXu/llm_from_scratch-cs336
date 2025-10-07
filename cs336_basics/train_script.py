@@ -4,9 +4,8 @@ import logging
 import time
 
 import torch
-from torch import nn, optim
-from torch.utils.data import DataLoader
 import wandb
+import yaml
 
 from .train_transformer import (
     cross_entropy_loss,
@@ -23,7 +22,6 @@ from .optimizer import (
 )
 from .data import (
     get_batch,
-    DatasetForTransformer,
 )
 from .train_bpe import (
     train_bpe,
@@ -105,76 +103,22 @@ def prepare_memmap_data(vocab_size=10000, dtype=np.int32) -> None:
     process_to_binary(train_data_path, output_train_bin)
     process_to_binary(valid_data_path, output_valid_bin)
 
+def load_config(config_path: str) -> argparse.Namespace:
+    """从 YAML 文件加载配置，并转换为 Namespace 对象"""
+    with open(config_path, "r", encoding="utf-8") as f:
+        config_dict = yaml.safe_load(f)  # 加载 YAML 为字典
 
-# def train_one_iteration(
-#     model: nn.Module,
-#     opt: optim.Optimizer,
-#     data_loader: DataLoader,
-#     max_l2_norm: float,
-#     epoch: int,
-#     global_step: int,
-# ) -> (float, int):
-#     model.train()
-#     total_loss = 0.0
-#     start_time = time.time()
-#
-#     for batch_idx, (x, y) in enumerate(data_loader):
-#         global_step += 1
-#
-#         # ToDo: use lr_cosine_schedule
-#         # lr = get_lr_cosine_schedule(global_step, max_l2_norm)
-#
-#         logits = model(x)
-#         opt.zero_grad()
-#
-#         vocab_size = logits.shape[-1]
-#         loss = cross_entropy_loss(logits.reshape(-1, vocab_size), y.reshape(-1))
-#         loss.backward()
-#         gradient_clipping(model.parameters(), max_l2_norm)
-#
-#         opt.step()
-#         if batch_idx % 100 == 0 and batch_idx > 0:
-#             avg_loss = total_loss / (batch_idx + 1)
-#             logger.info(
-#                 f"Batch {batch_idx}/{len(data_loader)}"
-#                 f"Loss: {avg_loss:.4f}"
-#                 f"Time: {time.time() - start_time:.2f}s"
-#             )
-#             wandb.log(
-#                 {
-#                     "batch_loss": loss.item(),
-#                     "avg_batch_loss": avg_loss,
-#                     "epoch": epoch + 1,
-#                     "step": global_step,
-#                     "wallclock_time": time.time() - start_time,
-#                 }
-#             )
-#
-#     avg_epoch_loss = total_loss / len(data_loader)
-#     return avg_epoch_loss
+    # 将嵌套字典展开为扁平的 Namespace（方便像 args.model.num_layers 一样访问）
+    # 如需保持嵌套，可直接 return Namespace(**config_dict)
+    flat_dict = {}
+    for key, value in config_dict.items():
+        if isinstance(value, dict):
+            for subkey, subvalue in value.items():
+                flat_dict[subkey] = subvalue
+        else:
+            flat_dict[key] = value
 
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Train transformer model")
-
-    parser.add_argument("--total_iteration", type=int, default=800, help="total number of iterations")
-    parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
-    parser.add_argument("--vocab_size", type=int, default=10000, help="vocab size")
-    parser.add_argument("--context_length", type=int, default=256, help="context length")
-
-    parser.add_argument("--num_layers", type=int, default=4, help="number of layers")
-    parser.add_argument("--num_heads", type=int, default=16, help="number of heads")
-    parser.add_argument("--d_model", type=int, default=512, help="hidden dimension")
-    parser.add_argument("--d_ff", type=int, default=1344, help="hidden dimension")
-    parser.add_argument("--rope_theta", type=float, default=10000, help="rope_theta")
-
-    parser.add_argument("--data_path", type=str, default="./data/train_tokens.bin", help="data path")
-    parser.add_argument("--batch_size", type=int, default=128, help="batch size")
-    parser.add_argument("--checkpoint_path", type=str, default="./data/train.ckpt", help="checkpoint path")
-    parser.add_argument("--max_l2_norm", type=float, default=10, help="max l2 norm")
-
-    args = parser.parse_args()
-    return args
+    return argparse.Namespace(**flat_dict)
 
 
 def main(args: argparse.Namespace):
@@ -204,18 +148,6 @@ def main(args: argparse.Namespace):
 
     opt = AdamW(model.parameters(), lr=args.lr)
 
-    # train_dataset = DatasetForTransformer(
-    #     data_path=args.data_path,
-    #     context_length=args.context_length,
-    #     device=device,
-    #     dtype=torch.float32,
-    # )
-    # train_loader = DataLoader(
-    #     dataset=train_dataset,
-    #     batch_size=args.batch_size,
-    #     shuffle=True,
-    #     num_workers=2,
-    # )
     memmap_data = np.memmap(args.data_path, mode="r", dtype=np.int32)
     train_dataset = torch.from_numpy(memmap_data).to(dtype=torch.long, device=device)
 
@@ -230,9 +162,12 @@ def main(args: argparse.Namespace):
     for cur_iter in range(start_iter, args.total_iteration):
         iter_start_time = time.time()
 
-        # ToDo: use lr_cosine_schedule
-        # lr = get_lr_cosine_schedule(global_step, max_l2_norm)
+        # calculate lr
+        lr = get_lr_cosine_schedule(cur_iter, args.max_lr, args.min_lr, args.warnup_iters, args.cosine_cycle_iters)
+        for group in opt.param_groups:
+            group["lr"] = lr
 
+        # get train data
         x, y = get_batch(train_dataset, args.batch_size, args.context_length, device)
         logits = model(x)
         opt.zero_grad()
@@ -266,5 +201,6 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = load_config("./cs336_basics/config.yaml")
+    print(f"train_args: {args}")
     main(args)
