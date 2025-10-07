@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from cs336_basics.base_module import (
+from .base_module import (
     LinearLayer,
     EmbeddingLayer,
     RMSNormLayer,

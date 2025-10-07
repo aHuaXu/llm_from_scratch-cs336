@@ -8,30 +8,30 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 import wandb
 
-from cs336_basics.train_transformer import (
+from .train_transformer import (
     cross_entropy_loss,
     save_checkpoint,
     load_checkpoint,
 )
-from cs336_basics.transformer import (
+from .transformer import (
     TransformerLM,
 )
-from cs336_basics.optimizer import (
+from .optimizer import (
     AdamW,
     get_lr_cosine_schedule,
     gradient_clipping,
 )
-from cs336_basics.data import (
+from .data import (
     get_batch,
     DatasetForTransformer,
 )
-from cs336_basics.train_bpe import (
+from .train_bpe import (
     train_bpe,
     default_chunk_generator,
     get_vocab_merges_path,
     load_vocab_and_merges,
 )
-from cs336_basics.bpe_tokenizer import BpeTokenizer
+from .bpe_tokenizer import BpeTokenizer
 import numpy as np
 from tqdm import tqdm
 import os
@@ -57,6 +57,9 @@ def prepare_memmap_data(vocab_size=10000, dtype=np.int32) -> None:
     valid_data_path = "./data/TinyStoriesV2-GPT4-valid.txt"
     output_train_bin = "./data/train_tokens.bin"  # 二进制文件
     output_valid_bin = "./data/valid_tokens.bin"
+
+    if os.path.exists(output_train_bin) and os.path.exists(output_valid_bin):
+        return
 
     # 2. 训练BPE并初始化分词器
     vocab_path, merges_path = get_vocab_merges_path(train_data_path)
@@ -154,8 +157,8 @@ def prepare_memmap_data(vocab_size=10000, dtype=np.int32) -> None:
 def parse_args():
     parser = argparse.ArgumentParser(description="Train transformer model")
 
-    parser.add_argument("--total_iteration", type=int, default=10, help="total number of iterations")
-    parser.add_argument("--lr", type=float, default=1e-3, help="learning rate")
+    parser.add_argument("--total_iteration", type=int, default=800, help="total number of iterations")
+    parser.add_argument("--lr", type=float, default=1e-2, help="learning rate")
     parser.add_argument("--vocab_size", type=int, default=10000, help="vocab size")
     parser.add_argument("--context_length", type=int, default=256, help="context length")
 
@@ -168,7 +171,7 @@ def parse_args():
     parser.add_argument("--data_path", type=str, default="./data/train_tokens.bin", help="data path")
     parser.add_argument("--batch_size", type=int, default=128, help="batch size")
     parser.add_argument("--checkpoint_path", type=str, default="./data/train.ckpt", help="checkpoint path")
-    parser.add_argument("--max_l2_norm", type=float, default=1000, help="max l2 norm")
+    parser.add_argument("--max_l2_norm", type=float, default=10, help="max l2 norm")
 
     args = parser.parse_args()
     return args

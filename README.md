@@ -48,3 +48,9 @@ gunzip owt_valid.txt.gz
 cd ..
 ```
 
+## Assignment
+### 1
+Use the following command to train the model
+```sh
+uv run -m cs336_basics.train_script
+```

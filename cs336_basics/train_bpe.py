@@ -6,7 +6,7 @@ from multiprocessing import Pool
 from pathlib import Path
 from typing import Generator, Tuple, List, Pattern, Union
 from tqdm import tqdm
-from cs336_basics.pretokenization_example import (
+from .pretokenization_example import (
     find_chunk_boundaries,
     get_expected_chunk_num,
 )

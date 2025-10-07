@@ -1,7 +1,7 @@
 from multiprocessing import Pool
 from typing import Iterable, Iterator, List
 from tqdm import tqdm
-from cs336_basics.train_bpe import (
+from .train_bpe import (
     default_chunk_generator,
     token_from_chunk_generator,
     word2bytes,

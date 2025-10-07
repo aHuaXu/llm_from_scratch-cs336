@@ -2,11 +2,6 @@ import os
 import random
 from typing import BinaryIO, IO
 
-from torch import nn
-from cs336_basics.base_module import (
-    softmax,
-    to_onehot,
-)
 import torch
 
 def log_softmax(x: torch.Tensor, dim: int = 0) -> torch.Tensor:

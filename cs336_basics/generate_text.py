@@ -1,8 +1,8 @@
 import torch
 from torch import nn
-from cs336_basics.bpe_tokenizer import BpeTokenizer
+from .bpe_tokenizer import BpeTokenizer
 from typing import List
-from cs336_basics.base_module import softmax
+from .base_module import softmax
 
 
 def generate_text(
