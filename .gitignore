@@ -163,3 +163,6 @@ cython_debug/
 *.zip
 data/
 wandb/
+
+tests/_snapshots
+tests/fixtures

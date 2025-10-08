@@ -34,10 +34,10 @@ def get_batch(
 
     start_indices = torch.tensor(
         random.sample(range(n - context_length), batch_size),
-        device=device,
-        dtype=torch.int
+        # device=device,
+        dtype=torch.int64
     )
-    offset = torch.arange(context_length, device=device, dtype=torch.int)
+    offset = torch.arange(context_length, dtype=torch.int)
 
     x_indices = start_indices.unsqueeze(1) + offset
 

@@ -33,13 +33,6 @@ class LinearLayer(nn.Module):
     ) -> torch.Tensor:
         return x @ self.W.T
 
-def to_onehot(x: torch.Tensor, num_vocab: int) -> torch.Tensor:
-    *batch_size, = x.shape
-    one_hot = torch.zeros(*batch_size, num_vocab, device=x.device, dtype=x.dtype)
-    new_dim = len(batch_size)
-    one_hot.scatter_(new_dim, x.unsqueeze(new_dim), 1)
-    return one_hot
-
 class EmbeddingLayer(nn.Module):
     def __init__(
             self,
@@ -71,8 +64,7 @@ class EmbeddingLayer(nn.Module):
 
     # x.shape: [batch_size, num_queries]
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = to_onehot(x, self.num_vocab).to(self.W.dtype)
-        return y @ self.W
+        return self.W[x]
 
 # Root Mean Square Layer Normalization
 class RMSNormLayer(nn.Module):

@@ -141,7 +141,7 @@ def main(args: argparse.Namespace):
         num_heads=args.num_heads,
         d_ff=args.d_ff,
         device=device,
-        dtype=torch.float32,
+        dtype=torch.bfloat16,
         rope_theta=args.rope_theta,
     )
     wandb.watch(model, log="all")
@@ -163,7 +163,7 @@ def main(args: argparse.Namespace):
         iter_start_time = time.time()
 
         # calculate lr
-        lr = get_lr_cosine_schedule(cur_iter, args.max_lr, args.min_lr, args.warnup_iters, args.cosine_cycle_iters)
+        lr = get_lr_cosine_schedule(cur_iter, args.max_lr, args.min_lr, args.warmup_iters, args.cosine_cycle_iters)
         for group in opt.param_groups:
             group["lr"] = lr
 
@@ -190,6 +190,7 @@ def main(args: argparse.Namespace):
                 "loss": loss.item(),
                 "iter_time": iter_time,
                 "iteration": cur_iter+1,
+                "lr": lr,
                 "wallclock_time": time.time() - experiment_start_time,
             }
         )

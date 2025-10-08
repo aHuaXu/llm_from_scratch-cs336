@@ -15,13 +15,13 @@ model:
 # 数据和路径参数
 data:
   data_path: "./data/train_tokens.bin"
-  batch_size: 256
+  batch_size: 128
   checkpoint_path: "./data/train.ckpt"
 
 # 训练参数
 training:
   max_l2_norm: 10.0
-  max_lr: 0.1        # 余弦调度的最大学习率
-  min_lr: 0.01       # 余弦调度的最小学习率
+  max_lr: 0.001        # 余弦调度的最大学习率
+  min_lr: 0.0004      # 余弦调度的最小学习率
   warmup_iters: 100  # 注意：原代码中参数名是 warnup_iters（拼写错误），这里修正为 warmup_iters
-  cosine_cycle_iters: 100000
+  cosine_cycle_iters: 10000

@@ -2,6 +2,7 @@ from collections.abc import Callable, Iterable
 from typing import Optional
 import torch
 import math
+# import torch.jit as jit
 
 
 class SGD(torch.optim.Optimizer):
@@ -51,8 +52,9 @@ Parameters:
 - ε (eps): Small constant for numerical stability (default: 1e-8)
 - λ (weight_decay): Weight decay coefficient (default: 1e-8)
 """
+# @jit.script
 class AdamW(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-8):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=1e-4):
         if lr < 0:
             raise ValueError(f"Invalid learning rate: {lr}")
         beta1, beta2 = betas
