@@ -63,3 +63,14 @@ To submit, run `./test_and_make_submission.sh` . This script will install your
 code's dependencies, run tests, and create a gzipped tarball with the output. We
 should be able to unzip your submitted tarball and run
 `./test_and_make_submission.sh` to verify your test results.
+
+## How to run
+
+### 1. naive_ddp.py
+```aiignore
+uv run cs336-basics.naive_ddp
+```
+
+## ToDo
+1. The first whole part
+2. `Problem (naive_ddp_benchmarking): 3 points`
