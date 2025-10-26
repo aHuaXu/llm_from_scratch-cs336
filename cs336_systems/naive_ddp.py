@@ -16,6 +16,8 @@ def naive_data_parallelism(
     num_layers: int,
     num_steps: int,
     backend: str,
+
+    flatten: bool = True,
 ):
     setup(rank, world_size, backend)
     torch.manual_seed(66)
@@ -44,8 +46,28 @@ def naive_data_parallelism(
 
         loss.backward()
 
-        for param in params:
-            dist.all_reduce(tensor=param.grad, op=dist.ReduceOp.AVG, async_op=False)
+        if flatten:
+            # 1. Collect non-empty gradients
+            grads = [param.grad for param in params if param.grad is not None]
+
+            # 2. Flatten using PyTorch's internal utility
+            flatten_grad = torch._utils._flatten_dense_tensors(grads)
+
+            # 3. Perform all-reduce on the flattened tensor
+            dist.all_reduce(flatten_grad, op=dist.ReduceOp.AVG, async_op=False)
+
+            # 4. Unflatten back to original shapes using the matching utility
+            unflatten_grads = torch._utils._unflatten_dense_tensors(flatten_grad, grads)
+
+            # 5. Assign unflatten gradients back to parameters
+            grad_idx = 0
+            for param in params:
+                if param.grad is not None:
+                    param.grad = unflatten_grads[grad_idx]
+                    grad_idx += 1
+        else:
+            for param in params:
+                dist.all_reduce(tensor=param.grad, op=dist.ReduceOp.AVG, async_op=False)
 
         optimizer.step()
 
