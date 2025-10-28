@@ -1,5 +1,6 @@
 import os
 import time
+from typing import List
 
 import torch
 import torch.distributed as dist
@@ -47,24 +48,7 @@ def naive_data_parallelism(
         loss.backward()
 
         if flatten:
-            # 1. Collect non-empty gradients
-            grads = [param.grad for param in params if param.grad is not None]
-
-            # 2. Flatten using PyTorch's internal utility
-            flatten_grad = torch._utils._flatten_dense_tensors(grads)
-
-            # 3. Perform all-reduce on the flattened tensor
-            dist.all_reduce(flatten_grad, op=dist.ReduceOp.AVG, async_op=False)
-
-            # 4. Unflatten back to original shapes using the matching utility
-            unflatten_grads = torch._utils._unflatten_dense_tensors(flatten_grad, grads)
-
-            # 5. Assign unflatten gradients back to parameters
-            grad_idx = 0
-            for param in params:
-                if param.grad is not None:
-                    param.grad = unflatten_grads[grad_idx]
-                    grad_idx += 1
+            all_reduce_params_flatten(params)
         else:
             for param in params:
                 dist.all_reduce(tensor=param.grad, op=dist.ReduceOp.AVG, async_op=False)
@@ -75,6 +59,28 @@ def naive_data_parallelism(
               f"params: {[param.sum().item() for param in params]}", flush=True)
 
     cleanup()
+
+def all_reduce_params_flatten(params: List[torch.Tensor], async_op: bool = False):
+    # 1. Collect non-empty gradients
+    grads = [param.grad for param in params if param.grad is not None]
+
+    # 2. Flatten using PyTorch's internal utility
+    flatten_grad = torch._utils._flatten_dense_tensors(grads)
+
+    # 3. Perform all-reduce on the flattened tensor
+    handler = dist.all_reduce(flatten_grad, op=dist.ReduceOp.AVG, async_op=async_op)
+
+    # 4. Unflatten back to original shapes using the matching utility
+    unflatten_grads = torch._utils._unflatten_dense_tensors(flatten_grad, grads)
+
+    # 5. Assign unflatten gradients back to parameters
+    grad_idx = 0
+    for param in params:
+        if param.grad is not None:
+            param.grad = unflatten_grads[grad_idx]
+            grad_idx += 1
+
+    return handler
 
 if __name__ == "__main__":
     # 总进程数（根据硬件资源调整）

@@ -72,5 +72,11 @@ uv run cs336-basics.naive_ddp
 ```
 
 ## ToDo
-1. The first whole part
-2. `Problem (naive_ddp_benchmarking): 3 points`
+- The first whole part
+  1. 1.1 `Profiling and Benchmarking` (need to do)
+- 2.2 `Problem (naive_ddp_benchmarking): 3 points`
+- 2.3.1 `Problem (minimal_ddp_flat_benchmarking): 2 points`
+- 2.3.2 `Problem (ddp_overlap_individual_parameters_benchmarking): 1 point`
+- 2.3.3 `Problem (ddp_bucketed_benchmarking): 3 points`
+- 2.4 `4D Parallelism`
+- 3 `Optimizer State Sharding`
