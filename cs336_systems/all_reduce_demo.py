@@ -81,6 +81,7 @@ def distributed_demo(
 
     # 生成随机张量（CPU上，若用GPU需加.cuda()）
     data = torch.randn(tensor_size, dtype=dtype, device=device)
+    print(f"Rank {rank} | init data: {data}", flush=True)
 
     # Warmup
     for _ in range(3):
