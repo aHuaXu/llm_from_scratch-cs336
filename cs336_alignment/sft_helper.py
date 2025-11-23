@@ -1,7 +1,7 @@
 from typing import List, Dict
 import torch
 from torchtyping import TensorType
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedModel
 from transformers.utils import PaddingStrategy
 
 
@@ -67,12 +67,13 @@ def tokenize_prompt_and_output(
 
     return {"input_ids": input_ids, "labels": labels, "response_mask": response_mask}
 
+
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """
     Get the entropy of the next-token predictions (i.e., entropy over the vocabulary dimension).
 
     Args:
-        logits: torch.Tensor Tensor of shape (batch_size, sequence_length, vocab_size)
+        logits: torch.Tensor shape (batch_size, sequence_length, vocab_size)
             containing unnormalized logits.
 
     Returns:
@@ -87,3 +88,100 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     probs = torch.exp(log_probs)
 
     return -torch.sum(log_probs * probs, dim=-1)
+
+
+def get_response_log_probs(
+    model: PreTrainedModel,
+    input_ids: torch.Tensor,
+    labels: torch.Tensor,
+    return_token_entropy: bool = False,
+) -> dict[str, torch.Tensor]:
+    """
+    Args:
+        model: PreTrainedModel HuggingFace model used for scoring (placed on the correct device
+            and in inference mode if gradients should not be computed).
+        input_ids: torch.Tensor shape (batch_size, sequence_length), concatenated prompt +
+            response tokens as produced by your tokenization method.
+        labels: torch.Tensor shape (batch_size, sequence_length), labels as produced by your
+            tokenization method.
+        return_token_entropy: bool If True, also return per-token entropy by calling
+            compute_entropy.
+    Returns:
+        dict[str, torch.Tensor].
+            "log_probs" shape (batch_size, sequence_length), conditional log-probabilities
+            log pθ(xt | x<t).
+            "token_entropy" optional, shape (batch_size, sequence_length), per-token entropy
+            for each position (present only if return_token_entropy=True).
+    """
+    logics = model(input_ids)
+
+    # log(softmax(logics))
+    logics_probs = logics - torch.logsumexp(logics, dim=-1, keepdim=True)
+
+    # log[softmax(logics)]_y
+    label_probs = torch.gather(logics_probs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+
+    res = {'log_probs': label_probs}
+    if return_token_entropy:
+        res['token_entropy'] = compute_entropy(logics)
+    return res
+
+
+def masked_normalize(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    normalize_constant: float,
+    dim: int | None = None,
+) -> torch.Tensor:
+    """
+    Sum over a dimension and normalize by a constant, considering only those elements where mask == 1.
+
+    Args:
+        tensor: torch.Tensor The tensor to sum and normalize.
+        mask: torch.Tensor Same shape as tensor; positions with 1 are included in the sum.
+        normalize_constant: float the constant to divide by for normalization.
+        dim: int | None the dimension to sum along before normalization. If None, sum over all dimensions.
+
+    Returns:
+        torch.Tensor the normalized sum, where masked elements (mask == 0) don't contribute to the sum.
+    """
+    assert normalize_constant > 0
+    return torch.sum(tensor * mask, dim=dim)/normalize_constant
+
+
+def sft_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    normalize_constant: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Execute a forward-and-backward pass on a microbatch.
+
+    Args:
+        policy_log_probs: (batch_size, sequence_length), per-token log-probabilities from the
+            SFT policy being trained.
+        response_mask: (batch_size, sequence_length), 1 for response tokens, 0 for
+            prompt/padding.
+        gradient_accumulation_steps: Number of microbatches per optimizer step.
+        normalize_constant: The constant by which to divide the sum. It is fine to leave this as 1.0.
+
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]].
+            loss: scalar tensor. The microbatch loss, adjusted for gradient accumulation. We return
+            this so we can log it.
+            metadata: Dict with metadata from the underlying loss call, and any other statistics you
+            might want to log.
+    """
+    loss = -masked_normalize(policy_log_probs, response_mask, normalize_constant)
+
+    microbatch_loss = loss/gradient_accumulation_steps
+    microbatch_loss.backward()
+
+    metadata = {
+        "log_probs": policy_log_probs,
+        "response_mask": response_mask,
+        "raw_loss": loss,
+        "microbatch_loss": microbatch_loss,
+    }
+    return loss, metadata
