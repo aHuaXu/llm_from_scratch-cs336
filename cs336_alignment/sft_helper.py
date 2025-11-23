@@ -113,7 +113,8 @@ def get_response_log_probs(
             "token_entropy" optional, shape (batch_size, sequence_length), per-token entropy
             for each position (present only if return_token_entropy=True).
     """
-    logics = model(input_ids)
+    model_output = model(input_ids)
+    logics = model_output.logits
 
     # log(softmax(logics))
     logics_probs = logics - torch.logsumexp(logics, dim=-1, keepdim=True)
@@ -123,7 +124,8 @@ def get_response_log_probs(
 
     res = {'log_probs': label_probs}
     if return_token_entropy:
-        res['token_entropy'] = compute_entropy(logics)
+        # res['token_entropy'] = compute_entropy(logics)
+        res['token_entropy'] = -torch.sum(logics_probs * torch.exp(logics_probs), dim=-1)
     return res
 
 
@@ -145,7 +147,7 @@ def masked_normalize(
     Returns:
         torch.Tensor the normalized sum, where masked elements (mask == 0) don't contribute to the sum.
     """
-    assert normalize_constant > 0
+    assert normalize_constant != 0.0
     return torch.sum(tensor * mask, dim=dim)/normalize_constant
 
 
@@ -173,15 +175,16 @@ def sft_microbatch_train_step(
             metadata: Dict with metadata from the underlying loss call, and any other statistics you
             might want to log.
     """
-    loss = -masked_normalize(policy_log_probs, response_mask, normalize_constant)
+    # also normalize in the batch
+    loss = -masked_normalize(policy_log_probs, response_mask, normalize_constant*policy_log_probs.shape[0])
 
     microbatch_loss = loss/gradient_accumulation_steps
     microbatch_loss.backward()
 
     metadata = {
-        "log_probs": policy_log_probs,
-        "response_mask": response_mask,
-        "raw_loss": loss,
-        "microbatch_loss": microbatch_loss,
+        "log_probs": policy_log_probs.detach(),
+        "response_mask": response_mask.detach(),
+        "raw_loss": loss.detach(),
+        "microbatch_loss": microbatch_loss.detach(),
     }
-    return loss, metadata
+    return microbatch_loss, metadata
