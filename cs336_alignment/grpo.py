@@ -1,5 +1,5 @@
 import torch
-from typing import Callable, List, Dict, Tuple
+from typing import Callable, List, Dict, Tuple, Literal, Optional
 
 
 def compute_group_normalized_rewards(
@@ -55,3 +55,106 @@ def compute_group_normalized_rewards(
     }
     
     return advantages.flatten(), raw_rewards, metadata
+
+
+def compute_naive_policy_gradient_loss(
+    raw_rewards_or_advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute the policy-gradient loss at every token, where raw_rewards_or_advantages is either
+    the raw reward or an already-normalized advantage.
+    Args:
+        raw_rewards_or_advantages: torch.Tensor Shape (batch_size, 1), scalar
+        reward/advantage for each rollout response.
+        policy_log_probs: torch.Tensor Shape (batch_size, sequence_length), logprobs for
+        each token.
+    Returns:
+        torch.Tensor Shape (batch_size, sequence_length), the per-token policy-gradient loss (to
+        be aggregated across the batch and sequence dimensions in the training loop).
+    Implementation tips:
+    • Broadcast the raw_rewards_or_advantages over the sequence_length dimension.
+    """
+    return -raw_rewards_or_advantages * policy_log_probs
+
+
+def compute_grpo_clip_loss(
+    advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    cliprange: float = 0.2,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Args:
+        advantages: torch.Tensor Shape (batch_size, 1), per-example advantages A.
+        policy_log_probs: torch.Tensor Shape (batch_size, sequence_length), per-token log
+        probs from the policy being trained.
+        old_log_probs: torch.Tensor Shape (batch_size, sequence_length), per-token log probs
+        from the old policy.
+        cliprange: float Clip parameter ϵ (e.g. 0.2).
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]].
+        loss torch.Tensor of shape (batch_size, sequence_length), the per-token clipped
+        loss.
+        metadata dict containing whatever you want to log. We suggest logging whether each
+        token was clipped or not, i.e., whether the clipped policy gradient loss on the RHS of
+        the min was lower than the LHS.
+    Implementation tips:
+    • Broadcast advantages over sequence_length.
+    """
+    log_probs_div = torch.exp(policy_log_probs) / torch.exp(old_log_probs)
+    clipped_log_probs_div = torch.clamp(log_probs_div, min=1-cliprange, max=1+cliprange)
+    
+    lhs = advantages * log_probs_div
+    rhs = advantages * clipped_log_probs_div
+    
+    loss = torch.min(lhs, rhs)
+    
+    metadata: Dict[str, torch.Tensor] = {
+        "is_clipped": (loss != lhs),
+        "clipped_ratio": (loss != lhs).float().mean().item(),
+    }
+    
+    return -loss, metadata
+
+
+def compute_policy_gradient_loss(
+    policy_log_probs: torch.Tensor,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: Optional[torch.Tensor] = None,
+    advantages: Optional[torch.Tensor] = None,
+    old_log_probs: Optional[torch.Tensor] = None,
+    cliprange: Optional[float] = None,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Select and compute the desired policy-gradient loss.
+    Args:
+        policy_log_probs (batch_size, sequence_length), per-token log-probabilities from the
+        policy being trained.
+        loss_type One of "no_baseline", "reinforce_with_baseline", or "grpo_clip".
+        raw_rewards Required if loss_type == "no_baseline"; shape (batch_size, 1).
+        advantages Required for"reinforce_with_baseline" and "grpo_clip"; shape
+        (batch_size, 1).
+        old_log_probs Required for"grpo_clip"; shape (batch_size, sequence_length).
+        cliprange Required for"grpo_clip"; scalar ϵ used for clipping.
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]].
+        loss (batch_size, sequence_length), per-token loss.
+        metadata dict, statistics from the underlying routine (e.g., clip fraction for GRPO-Clip).
+    Implementation tips:
+    • Delegate to compute_naive_policy_gradient_loss or compute_grpo_clip_loss.
+    • Perform argument checks (see assertion pattern above).
+    • Aggregate any returned metadata into a single dict.
+    """
+    if loss_type == "no_baseline":
+        assert raw_rewards is not None, "raw_rewards is required for loss_type='no_baseline'"
+        return compute_naive_policy_gradient_loss(raw_rewards, policy_log_probs), {}
+    elif loss_type == "reinforce_with_baseline":
+        assert advantages is not None, "advantages is required for loss_type='reinforce_with_baseline'"
+        return compute_naive_policy_gradient_loss(advantages, policy_log_probs), {}
+    elif loss_type == "grpo_clip":
+        assert old_log_probs is not None, "old_log_probs is required for loss_type='grpo_clip'"
+        assert cliprange is not None, "cliprange is required for loss_type='grpo_clip'"
+        return compute_grpo_clip_loss(advantages, policy_log_probs, old_log_probs, cliprange)
+    else:
+        raise ValueError(f"Invalid loss_type: {loss_type}")
