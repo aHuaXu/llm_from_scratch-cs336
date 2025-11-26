@@ -158,3 +158,22 @@ def compute_policy_gradient_loss(
         return compute_grpo_clip_loss(advantages, policy_log_probs, old_log_probs, cliprange)
     else:
         raise ValueError(f"Invalid loss_type: {loss_type}")
+    
+    
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: Optional[int] = None,
+) -> torch.Tensor:
+    """
+    Compute the mean of tensor along a given dimension, considering only those elements where
+    mask == 1.
+    Args:
+        tensor: torch.Tensor The data to be averaged.
+        mask: torch.Tensor Same shape as tensor; positions with 1 are included in the mean.
+        dim: int | None Dimension over which to average. If None, compute the mean over all
+        masked elements.
+    Returns:
+        torch.Tensor The masked mean; shape matches tensor.mean(dim) semantics.
+    """
+    return torch.sum(tensor * mask, dim=dim) / torch.sum(mask, dim=dim)
