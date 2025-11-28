@@ -14,7 +14,7 @@ from cs336_alignment.sft_helper import (
     masked_normalize,
     sft_microbatch_train_step
 )
-from cs336_alignment.grpo import (
+from cs336_alignment.grpo_helper import (
     compute_group_normalized_rewards,
     compute_naive_policy_gradient_loss,
     compute_grpo_clip_loss,
