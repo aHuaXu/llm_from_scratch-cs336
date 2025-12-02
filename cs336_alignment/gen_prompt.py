@@ -1,5 +1,5 @@
 import random
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Tuple
 
 
 class PromptDataset:
@@ -10,7 +10,7 @@ class PromptDataset:
     def __init__(
         self,
         raw_question: List[str],  # 原始数据（纯问题/R1-Zero 原始文本/自定义内容）
-        raw_ground_truths: List[str],  
+        raw_ground_truths: List[str],
         prompt_type: str = "r1_zero",  # prompt 类型：raw/r1_zero/custom
         prompt_template: Optional[Callable[[str], str]] = None,  # 自定义格式化模板
         r1_zero_template_path: str = "./prompts/r1_zero.prompt",

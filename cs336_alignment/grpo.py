@@ -2,23 +2,23 @@ import torch
 from typing import Literal, Optional, Callable, Dict, List
 
 from torch.optim import AdamW
-from transformers import AutoTokenizer, PreTrainedModel
+from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 from vllm import LLM, SamplingParams
 import copy
 from .initializer import VLLMInitializer
 from .gen_prompt import PromptDataset
-from .sft_helper import tokenize_prompt_and_output
-from .grpo_helper import compute_group_normalized_rewards
+from .sft_helper import tokenize_prompt_and_output, get_response_log_probs
+from .grpo_helper import compute_group_normalized_rewards, grpo_microbatch_train_step
 
 class Grpo:
     def __init__(
         self,
-        policy: torch.nn.Module,  # 核心策略模型（nn.Module/Transformers PreTrainedModel）
+        policy: PreTrainedModel,  # 核心策略模型（nn.Module/Transformers PreTrainedModel）
         old_policy_wrapper: VLLMInitializer,    # inference only
         reward_fn: Callable[[str, str], Dict[str, float]], # (response, ground_truth) -> reward
         raw_questions: List[str], 
         raw_ground_truths: List[str],  
-        tokenizer: AutoTokenizer,  # 文本tokenizer
+        tokenizer: PreTrainedTokenizer,  # 文本tokenizer
 
         # 算法核心参数
         n_grpo_steps: int = 200,
@@ -38,32 +38,13 @@ class Grpo:
     ):
         # assert
         assert train_batch_size % gradient_accumulation_steps == 0, "train_batch_size must be divisible by gradient_accumulation_steps"
-        micro_train_batch_size = train_batch_size // gradient_accumulation_steps
+        self.micro_train_batch_size = train_batch_size // gradient_accumulation_steps
 
         assert rollout_batch_size % group_size == 0, "rollout_batch_size must be divisible by group_size"
         self.n_prompts_per_rollout_batch = rollout_batch_size // group_size
 
         assert train_batch_size >= group_size, "train_batch_size must be greater than or equal to group_size"
-        n_microbatches_per_rollout_batch = rollout_batch_size // micro_train_batch_size
-
-        self.sampling_params = SamplingParams(
-            temperature=sampling_temperature,
-            min_tokens=sampling_min_tokens,
-            max_tokens=sampling_max_tokens,
-            n=group_size,
-            stop=["</answer>"],
-            top_p=1.0,
-        )
-        self.prompt_dataset = PromptDataset(
-            raw_questions=raw_questions,
-            raw_ground_truths=raw_ground_truths,
-        )
-        self.optimizer = AdamW(
-            policy.parameters(),
-            lr=learning_rate,
-            weight_decay=0.0,
-            betas=(0.9, 0.95),
-        )
+        self.n_microbatches_per_rollout_batch = rollout_batch_size // self.micro_train_batch_size
 
         self.policy = policy
         self.old_policy_wrapper = old_policy_wrapper
@@ -74,24 +55,49 @@ class Grpo:
         self.n_grpo_steps = n_grpo_steps
         self.learning_rate = learning_rate
         self.advantage_eps = advantage_eps
+        self.group_size = group_size
         self.epochs_per_rollout_batch = epochs_per_rollout_batch
         self.loss_type = loss_type
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.use_std_normalization = use_std_normalization
+
+        self.sampling_params = SamplingParams(
+            temperature=sampling_temperature,
+            min_tokens=sampling_min_tokens,
+            max_tokens=sampling_max_tokens,
+            n=group_size,
+            stop=["</answer>"],
+            top_p=1.0,
+        )
+        self.prompt_dataset = PromptDataset(
+            raw_question=raw_questions,
+            raw_ground_truths=raw_ground_truths,
+        )
+        self.optimizer = AdamW(
+            policy.parameters(),
+            lr=learning_rate,
+            weight_decay=0.0,
+            betas=(0.9, 0.95),
+        )
+
+        # ToDo: init wandb
 
     def train(self):
         for step in range(self.n_grpo_steps):
             # Sample a batch of questions D_b from D
-            questions, ground_truths = self.prompt_dataset.sample_batch(self.n_prompts_per_rollout_batch)
+            prompts, ground_truths = self.prompt_dataset.sample_batch(self.n_prompts_per_rollout_batch)
             
             # Set the old policy model πθold ←πθ
             self.old_policy_wrapper.load_policy_into_vllm(self.policy)
             
             # Sample G outputs for each question q ∈ D_b
-            outputs = self.old_policy.generate(questions, self.sampling_params)
-            
+            outputs = self.old_policy.generate(prompts, self.sampling_params)
+
+            repeated_prompts: List[str] = []
             responses: List[str] = []
-            old_log_probs: List[List[float]] = []
+            old_log_probs: List[List[float]] = []   # ToDo
             for completion in outputs:
+                repeated_prompts.extend([completion.prompt for _ in completion.outputs])
                 responses.extend([res.text for res in completion.outputs])
                 old_log_probs.extend([res.log_probs for res in completion.outputs])
                 
@@ -104,6 +110,44 @@ class Grpo:
                 advantage_eps=self.advantage_eps,
                 normalize_by_std=self.use_std_normalization,
             )
+            advantages, raw_rewards = advantages.unsqueeze(1), raw_rewards.unsqueeze(1)
+
+            # tokenizer inputs
+            combo = tokenize_prompt_and_output(
+                prompt_strs=repeated_prompts,
+                output_strs=responses,
+                tokenizer=self.tokenizer,
+            )
+            input_rollouts, labels, response_mask = (
+                combo["input_ids"], combo["labels"], combo["response_mask"])
             
-            for i in range(self.epochs_per_rollout_batch):
-                
+            for epoch in range(self.epochs_per_rollout_batch):
+                for micro_step in range(self.n_microbatches_per_rollout_batch):
+                    start_idx = micro_step * self.micro_train_batch_size
+                    end_idx = start_idx + self.micro_train_batch_size
+
+                    micro_x = input_rollouts[start_idx:end_idx]
+                    micro_y = labels[start_idx:end_idx]
+                    micro_mask = response_mask[start_idx:end_idx]
+                    micro_rewards = raw_rewards[start_idx:end_idx]
+                    micro_advantages = advantages[start_idx:end_idx]
+
+                    policy_log_probs = get_response_log_probs(
+                        model=self.policy,
+                        input_ids=micro_x,
+                        labels=micro_y,
+                    )["log_probs"]
+
+                    loss, metadata = grpo_microbatch_train_step(
+                        policy_log_probs=policy_log_probs,
+                        response_mask=micro_mask,
+                        gradient_accumulation_steps=self.gradient_accumulation_steps,
+                        loss_type=self.loss_type,
+                        raw_rewards=micro_rewards,
+                        advantages=micro_advantages,
+                        old_log_probs=old_log_probs, # ToDo
+                    )
+
+                    if (micro_step + 1) % self.gradient_accumulation_steps == 0:
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
