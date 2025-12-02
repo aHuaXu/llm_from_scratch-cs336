@@ -10,6 +10,7 @@ class PromptDataset:
     def __init__(
         self,
         raw_question: List[str],  # 原始数据（纯问题/R1-Zero 原始文本/自定义内容）
+        raw_ground_truths: List[str],  
         prompt_type: str = "r1_zero",  # prompt 类型：raw/r1_zero/custom
         prompt_template: Optional[Callable[[str], str]] = None,  # 自定义格式化模板
         r1_zero_template_path: str = "./prompts/r1_zero.prompt",
@@ -23,7 +24,9 @@ class PromptDataset:
                 - "custom": 自定义 Prompt（需传入 prompt_template）
             prompt_template: 自定义格式化函数（输入 raw_question 单条数据，输出格式化 Prompt）
         """
+        assert len(raw_question) == len(raw_ground_truths), "raw_question and raw_ground_truths must have the same length"
         self.raw_question = raw_question
+        self.raw_ground_truths = raw_ground_truths
         self.prompt_type = prompt_type
         self.prompt_template = prompt_template
         self.r1_zero_template_path = r1_zero_template_path
@@ -65,17 +68,22 @@ class PromptDataset:
         # 替换占位符，生成完整 R1-Zero Prompt
         return self.r1_zero_template.replace("{question}", question)
 
-    def sample_batch(self, batch_size: int) -> List[str]:
+    def sample_batch(self, batch_size: int) -> Tuple[List[str], List[str]]:
         """
         从 Prompt 列表中采样批次数据（对齐 GRPO 伪代码的 Sample Db 步骤）
         Args:
             batch_size: 批次大小
         Returns:
-            采样后的 Prompt 批次
+            Tuple[List[str], List[str]].
+                questions: List[str] 采样后的 Prompt 批次
+                ground_truths: List[str] 采样后的 Ground Truth 批次
         """
         batch_size = min(batch_size, len(self.prompts))
         # 无放回采样（保证批次多样性，若需放回可改用 random.choices）
-        return random.sample(self.prompts, k=batch_size)
+        indices = random.sample(range(len(self.prompts)), k=batch_size)
+        questions = [self.prompts[i] for i in indices]
+        ground_truths = [self.raw_ground_truths[i] for i in indices]
+        return questions, ground_truths
 
     def add_prompts(self, new_prompts: List[str]):
         """动态添加新的 Prompt 到数据集（可选扩展）"""

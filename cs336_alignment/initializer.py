@@ -14,9 +14,9 @@ class VLLMInitializer:
         self.device = device
         self.seed = seed
         self.gpu_memory_utilization = gpu_memory_utilization
-        self.inf_vllm = None  # 存储初始化后的vLLM实例
+        self._init_vllm()
 
-    def init_vllm(self) -> LLM:
+    def _init_vllm(self) -> LLM:
         """原 init_vllm 函数逻辑，初始化vLLM引擎"""
         vllm_set_random_seed(self.seed)
 
