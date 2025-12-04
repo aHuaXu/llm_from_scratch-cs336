@@ -1,6 +1,8 @@
 import random
 from typing import List, Optional, Callable, Tuple
 
+from datasets import Dataset, load_dataset
+import re
 
 class PromptDataset:
     """
@@ -14,6 +16,8 @@ class PromptDataset:
         prompt_type: str = "r1_zero",  # prompt 类型：raw/r1_zero/custom
         prompt_template: Optional[Callable[[str], str]] = None,  # 自定义格式化模板
         r1_zero_template_path: str = "./prompts/r1_zero.prompt",
+        dataset_id: str = "openai/gsm8k"
+        dataset_type: Literal["train", "test"] = "train"
     ):
         """
         Args:
@@ -37,6 +41,21 @@ class PromptDataset:
         print(f"✅ PromptDataset 初始化完成：共加载 {len(self.prompts)} 条 Prompt，类型：{prompt_type}")
 
 
+    def _load_dataset(self) -> Dataset:
+        """从 Hugging Face 加载数据集"""
+        dataset = load_dataset(self.dataset_id, split=self.dataset_type)
+        
+        ANSWER_PATTERN = r"(?i)(?:the answer is|answer:|final answer:)\s*([+-]?\d+(?:\.\d+)?)"
+        
+        def extract_ground_truth(example):
+            match = re.search(ANSWER_PATTERN, example["answer"])
+            example["ground_truth"] = float(match.group(1)) if match else None
+            return example
+        
+        dataset = dataset.map(extract_ground_truth, batched=False)
+        return dataset
+
+        
     def _load_r1_zero_template(self) -> str:
         """从文件读取 R1-Zero 模板文本"""
         try:
