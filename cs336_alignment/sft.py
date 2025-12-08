@@ -13,9 +13,10 @@ from .sft_helper import tokenize_prompt_and_output, get_response_log_probs, sft_
 from .drgrpo_grader import r1_zero_reward_fn
 from .sft_helper import get_model
 from .evaluate import evaluate_vllm
-from .init import log_init
+from .init import log_init, env_init
 from logging import getLogger
 
+env_init()
 logger = getLogger(__name__)
 
 class SFT:

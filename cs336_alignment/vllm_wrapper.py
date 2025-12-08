@@ -6,7 +6,6 @@ from unittest.mock import patch
 from vllm import LLM, SamplingParams
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
 from transformers import PreTrainedModel
-import wandb
 
 class VLLMWrapper:
     """

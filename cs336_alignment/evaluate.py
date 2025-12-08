@@ -6,6 +6,9 @@ from vllm import LLM, SamplingParams
 from .vllm_wrapper import VLLMWrapper
 from .gen_prompt import PromptDataset
 from .drgrpo_grader import r1_zero_reward_fn
+from .init import env_init
+
+env_init()
 
 model_path = os.path.abspath("./data/models/Qwen2.5-Math-1.5B")
 
@@ -32,30 +35,37 @@ def evaluate_vllm(
         compute evaluation metrics, and serialize results to disk.
     """
     total_prompts_num = 0
-    for prompts, _, ground_truths in prompt_dataset.evaluate_batch(64):
-
+    format_correct_num, result_correct_num = 0, 0
+    for prompts, _, ground_truths in prompt_dataset.evaluate_batch(10):
         if len(prompts) != len(ground_truths):
             raise ValueError("len(prompts) != len(ground_truths)")
 
+        total_prompts_num += len(prompts)
+
         # Generate texts from the prompts. The output is a list of RequestOutput objects
         # that contain the prompt, generated text, and other information.
-        format_correct_num, result_correct_num = 0, 0
         outputs = vllm_model.generate(prompts, eval_sampling_params)
         for idx, (output, label) in enumerate(tqdm(zip(outputs, ground_truths), total=len(outputs))):
             prompt = output.prompt
             generated_text = output.outputs[0].text
-            reward_dict = reward_fn(output, label)
-            print(f"prompt: {prompt!r}, output: {generated_text!r}, label: {label!r},"
-              f"reward: {reward_dict}")
+            reward_dict = reward_fn(generated_text, label)
+            print(f"prompt: {prompt!r},\noutput: {generated_text!r},\nlabel: {label!r},"
+              f"\nreward: {reward_dict}")
             format_correct_num += reward_dict["format_reward"]
             result_correct_num += reward_dict["reward"]
-            total_prompts_num += len(prompts)
 
     return format_correct_num / total_prompts_num, result_correct_num / total_prompts_num
 
 if __name__ == "__main__":
-    inf_vllm = VLLMWrapper(
-        model_path=model_path,
-        device="cuda:0",
+    format_accuracy, accuracy = evaluate_vllm(
+        vllm_model=VLLMWrapper(
+            model_id=model_path,
+            device="cuda:0",
+        ),
+        prompt_dataset=PromptDataset(
+            dataset_type="test",
+            sample_size=20
+        )
     )
-    evaluate_vllm()
+
+    print(f"format_accuracy: {format_accuracy}, accuracy: {accuracy}")

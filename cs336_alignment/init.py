@@ -31,4 +31,4 @@ def log_init(
 
 def env_init():
     os.environ["CUDA_VISIBLE_DEVICES"] = "6, 7"  # 子进程内屏蔽其他 GPU
-    os.environ["VLLM_ATTENTION_BACKEND"] = "torch"
+    # os.environ["VLLM_ATTENTION_BACKEND"] = "torch"
