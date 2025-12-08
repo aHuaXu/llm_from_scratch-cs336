@@ -13,7 +13,7 @@ class VLLMWrapper:
     基于原代码逻辑的 vLLM 初始化类，适配 SFT/RLHF 场景下的模型加载与日志配置
     """
 
-    def __init__(self, model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
+    def __init__(self, model_id: str, device: str, seed: int = 666, gpu_memory_utilization: float = 0.85):
         self.model_id = model_id
         self.device = device
         self.seed = seed
@@ -36,7 +36,7 @@ class VLLMWrapper:
                 model=self.model_id,
                 device=self.device,
                 dtype=torch.float16,
-                enable_prefix_caching=True,
+                enable_prefix_caching=False,
                 gpu_memory_utilization=self.gpu_memory_utilization,
                 tensor_parallel_size=1,
                 disable_custom_all_reduce=True,
@@ -54,14 +54,3 @@ class VLLMWrapper:
 
     def generate(self, prompts: List[str], sampling_params: SamplingParams):
         return self.inf_vllm.generate(prompts, sampling_params, use_tqdm=True)
-
-    @staticmethod
-    def setup_wandb_metrics():
-        """原代码中wandb日志配置逻辑，静态方法直接复用"""
-        # Setup wandb metrics
-        wandb.define_metric("train_step")  # the x‑axis for training
-        wandb.define_metric("eval_step")  # the x‑axis for evaluation
-        # everything that starts with train/ is tied to train_step
-        wandb.define_metric("train/*", step_metric="train_step")
-        # everything that starts with eval/ is tied to eval_step
-        wandb.define_metric("eval/*", step_metric="eval_step")

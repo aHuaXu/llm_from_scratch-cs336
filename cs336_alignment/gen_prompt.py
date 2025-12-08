@@ -1,5 +1,5 @@
 import random
-from typing import List, Optional, Callable, Tuple, Literal
+from typing import List, Optional, Callable, Tuple, Literal, Iterator
 
 from datasets import Dataset, load_dataset
 import pandas as pd
@@ -25,6 +25,8 @@ class PromptDataset:
         r1_zero_template_path: str = "cs336_alignment/prompts/r1_zero.prompt",
         dataset_dir: str = "cs336_alignment/data/gsm8k",
         dataset_type: Literal["train", "test"] = "train",
+        sample_size: int = 0,   # 采样的数据样本总数，默认全集
+        seed: int = 666,
     ):
         """
         Args:
@@ -45,7 +47,11 @@ class PromptDataset:
 
         self.dataset_dir = dataset_dir
         self.dataset_type = dataset_type
+        self.sample_size = sample_size
+        self.seed = seed
         self.dataset = self._load_dataset()
+
+        self.rng = random.Random(seed)
 
         self.sample_index = 0   # record if not random sample batch
 
@@ -78,14 +84,19 @@ class PromptDataset:
         else:
             raise ValueError(f"无效的 dataset_type：{self.dataset_type}，仅支持 train/test")
 
-        # pandas DataFrame 转 Hugging Face Dataset（关键：绕开 LocalFileSystem）
-        dataset = Dataset.from_pandas(df)
-        
-        ANSWER_PATTERN = r"(?i)(?:the answer is|answer:|final answer:|####)\s*([+-]?\d+(?:\.\d+)?)"
+        # pandas DataFrame 转 Hugging Face Dataset
+        full_dataset = Dataset.from_pandas(df)
+
+        if self.sample_size == 0 or self.sample_size > len(full_dataset):
+            dataset = full_dataset
+        else:
+            dataset = full_dataset.shuffle(seed=self.seed).select(range(self.sample_size))
 
         def extract_ground_truth(example):
-            match = re.search(ANSWER_PATTERN, example["answer"])
-            example["ground_truth"] = float(match.group(1)) if match else None
+            parts = example["answer"].split("####")
+            think, res = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
+            example["answer"] = f"{think}</think> <answer>{res}</answer>"
+            example["ground_truth"] = res
             return example
 
         dataset = dataset.map(extract_ground_truth, batched=False)
@@ -130,12 +141,11 @@ class PromptDataset:
         # 替换占位符，生成完整 R1-Zero Prompt
         return self.r1_zero_template.replace("{question}", question)
 
-    def sample_batch(self, batch_size: int , rand: bool = True) -> Tuple[List[str], List[str], List[str]]:
+    def train_batch(self, batch_size: int) -> Tuple[List[str], List[str], List[str]]:
         """
         从 Prompt 列表中采样批次数据（对齐 GRPO 伪代码的 Sample Db 步骤）
         Args:
             batch_size: 批次大小
-            rand: 是否随机选取
         Returns:
             Tuple[List[str], List[str]].
                 questions: List[str] 采样后的 Prompt 批次
@@ -143,27 +153,41 @@ class PromptDataset:
                 ground_truths: List[str] 采样后的 Ground Truth 批次
         """
         batch_size = min(batch_size, len(self.dataset))
-        if rand:
-            # 无放回采样（保证批次多样性，若需放回可改用 random.choices）
-            one_batch = self.dataset.select(
-                random.sample(range(len(self.dataset)), k=batch_size)
-            )
-        else:
-            end_index = min(self.sample_index + batch_size, len(self.dataset))
-            indices = list(range(self.sample_index, end_index))
-            one_batch = self.dataset.select(indices)
-            self.sample_index = end_index % len(self.dataset)
+        # 无放回采样（保证批次多样性，若需放回可改用 random.choices）
+        one_batch = self.dataset.select(
+            self.rng.sample(range(len(self.dataset)), k=batch_size)
+        )
         return one_batch["prompt"], one_batch["answer"], one_batch["ground_truth"]
+
+    def evaluate_batch(self, batch_size: int) -> Iterator[Tuple[List[str], List[str], List[str]]]:
+        """
+        评估专用的批次数据生成器：顺序、无随机、完整遍历数据集
+        Args:
+            batch_size: 评估批次大小
+        Yields:
+            Generator[Tuple[List[str], List[str], List[str]], None, None]:
+                每个元素为 (prompts, answers, ground_truths) 批次
+        """
+        start_index = 0
+
+        while start_index < len(self.dataset):
+            end_index = min(start_index + batch_size, len(self.dataset))
+            indices = list(range(start_index, end_index))
+            one_batch = self.dataset.select(indices)
+
+            yield one_batch["prompt"], one_batch["answer"], one_batch["ground_truth"]
+            start_index = end_index
 
 
 if __name__ == "__main__":
     prompt_dataset = PromptDataset(
-        dataset_type="test"
+        dataset_type="test",
+        sample_size=20,
     )
     print(f"dataset size: {len(prompt_dataset.dataset)}")
-    prompts, answers, truths = prompt_dataset.sample_batch(2, False)
-    for prompt, answer, truth in zip(prompts, answers, truths):
-        print(prompt)
-        print(answer)
-        print(truth)
-        print("--------------------------------")
+    for prompts, answers, truths in prompt_dataset.evaluate_batch(5):
+        for prompt, answer, truth in zip(prompts, answers, truths):
+            print(prompt)
+            print(answer)
+            print(truth)
+            print("--------------------------------")

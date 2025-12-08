@@ -1,8 +1,9 @@
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import torch
 from torchtyping import TensorType
-from transformers import PreTrainedTokenizer, PreTrainedModel
+from transformers import PreTrainedTokenizer, PreTrainedModel, AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import PaddingStrategy
+from .vllm_wrapper import VLLMWrapper
 
 
 def tokenize_prompt_and_output(
@@ -188,3 +189,23 @@ def sft_microbatch_train_step(
         "microbatch_loss": microbatch_loss.detach(),
     }
     return microbatch_loss, metadata
+
+
+def get_model(
+    model_path: str = "./data/models/Qwen2.5-Math-1.5B",
+) -> Tuple[PreTrainedModel, PreTrainedTokenizer, VLLMWrapper]:
+    policy = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.bfloat16,
+        # attn_implementation="flash_attention_2",
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    # init vllm
+    inf_vllm = VLLMWrapper(
+        model_id=model_path,
+        device="cuda:0",
+        seed=666,
+    )
+
+    return policy, tokenizer, inf_vllm
