@@ -7,7 +7,7 @@ import wandb
 from torch.optim import AdamW
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizer, AutoModelForCausalLM
 from vllm import LLM, SamplingParams
-from .initializer import VLLMInitializer
+from .vllm_wrapper import VLLMWrapper
 from .gen_prompt import PromptDataset
 from .sft_helper import tokenize_prompt_and_output, get_response_log_probs
 from .grpo_helper import compute_group_normalized_rewards, grpo_microbatch_train_step
@@ -17,10 +17,8 @@ class Grpo:
     def __init__(
         self,
         policy: PreTrainedModel,  # 核心策略模型（nn.Module/Transformers PreTrainedModel）
-        old_policy_wrapper: VLLMInitializer,    # inference only
+        old_policy_wrapper: VLLMWrapper,    # inference only
         reward_fn: Callable[[str, str], Dict[str, float]], # (response, ground_truth) -> reward
-        raw_questions: List[str], 
-        raw_ground_truths: List[str],  
         tokenizer: PreTrainedTokenizer,  # 文本tokenizer
 
         # 算法核心参数
@@ -51,7 +49,6 @@ class Grpo:
 
         self.policy = policy
         self.old_policy_wrapper = old_policy_wrapper
-        self.old_policy = old_policy_wrapper.inf_vllm
         self.reward_fn = reward_fn
         self.tokenizer = tokenizer
 
@@ -72,10 +69,7 @@ class Grpo:
             stop=["</answer>"],
             top_p=1.0,
         )
-        self.prompt_dataset = PromptDataset(
-            raw_question=raw_questions,
-            raw_ground_truths=raw_ground_truths,
-        )
+        self.prompt_dataset = PromptDataset()
         self.optimizer = AdamW(
             policy.parameters(),
             lr=learning_rate,
@@ -86,13 +80,13 @@ class Grpo:
     def train(self):
         for step in range(self.n_grpo_steps):
             # Sample a batch of questions D_b from D
-            prompts, ground_truths = self.prompt_dataset.sample_batch(self.n_prompts_per_rollout_batch)
+            prompts, _, ground_truths = self.prompt_dataset.sample_batch(self.n_prompts_per_rollout_batch)
             
             # Set the old policy model πθold ←πθ
             self.old_policy_wrapper.load_policy_into_vllm(self.policy)
             
             # Sample G outputs for each question q ∈ D_b
-            outputs = self.old_policy.generate(prompts, self.sampling_params)
+            outputs = self.old_policy_wrapper.generate(prompts, self.sampling_params)
 
             repeated_prompts: List[str] = []
             responses: List[str] = []
@@ -166,14 +160,14 @@ if __name__ == "__main__":
     model_path = "./data/models/Qwen2.5-Math-1.5B"
     policy = AutoModelForCausalLM.from_pretrained(
         model_path,
-        # torch_dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         # attn_implementation="flash_attention_2",
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     wandb.watch(policy, log="all")
 
     # init vllm
-    inf_vllm = VLLMInitializer(
+    inf_vllm = VLLMWrapper(
         model_id=model_path,
         device="cpu",   # ToDo: compensate
         seed=666,
@@ -187,8 +181,6 @@ if __name__ == "__main__":
         policy=policy,
         old_policy_wrapper=inf_vllm,
         reward_fn=r1_zero_reward_fn,
-        raw_questions=["What is the capital of China?"],
-        raw_ground_truths=["What is the capital of China?"],
         tokenizer=tokenizer,
     )
     grpo.train()

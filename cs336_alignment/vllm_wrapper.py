@@ -1,10 +1,14 @@
+import os
+from typing import List
+
 import torch
 from unittest.mock import patch
-from vllm import LLM, vllm_set_random_seed
+from vllm import LLM, SamplingParams
+from vllm.model_executor import set_random_seed as vllm_set_random_seed
 from transformers import PreTrainedModel
 import wandb
 
-class VLLMInitializer:
+class VLLMWrapper:
     """
     基于原代码逻辑的 vLLM 初始化类，适配 SFT/RLHF 场景下的模型加载与日志配置
     """
@@ -31,9 +35,11 @@ class VLLMInitializer:
             self.inf_vllm = LLM(
                 model=self.model_id,
                 device=self.device,
-                dtype=torch.bfloat16,
+                dtype=torch.float16,
                 enable_prefix_caching=True,
                 gpu_memory_utilization=self.gpu_memory_utilization,
+                tensor_parallel_size=1,
+                disable_custom_all_reduce=True,
             )
         return self.inf_vllm
 
@@ -45,6 +51,9 @@ class VLLMInitializer:
         state_dict = policy.state_dict()
         llm_model = self.inf_vllm.llm_engine.model_executor.driver_worker.model_runner.model
         llm_model.load_weights(state_dict.items())
+
+    def generate(self, prompts: List[str], sampling_params: SamplingParams):
+        return self.inf_vllm.generate(prompts, sampling_params, use_tqdm=True)
 
     @staticmethod
     def setup_wandb_metrics():

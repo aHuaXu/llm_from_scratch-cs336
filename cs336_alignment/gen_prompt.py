@@ -5,6 +5,7 @@ from datasets import Dataset, load_dataset
 import pandas as pd
 import re
 import os
+import torch
 
 
 class PromptDataset:
@@ -21,8 +22,8 @@ class PromptDataset:
             "question", "r1_zero", "custom"
         ] = "r1_zero",  # prompt 类型：raw/r1_zero/custom
         prompt_template: Optional[Callable[[str], str]] = None,  # 自定义格式化模板
-        r1_zero_template_path: str = "./prompts/r1_zero.prompt",
-        dataset_id: str = "openai/gsm8k",
+        r1_zero_template_path: str = "cs336_alignment/prompts/r1_zero.prompt",
+        dataset_dir: str = "cs336_alignment/data/gsm8k",
         dataset_type: Literal["train", "test"] = "train",
     ):
         """
@@ -41,9 +42,12 @@ class PromptDataset:
         self.prompt_template = prompt_template
         self.r1_zero_template_path = r1_zero_template_path
         self.r1_zero_template = self._load_r1_zero_template()
-        self.dataset_id = dataset_id
+
+        self.dataset_dir = dataset_dir
         self.dataset_type = dataset_type
         self.dataset = self._load_dataset()
+
+        self.sample_index = 0   # record if not random sample batch
 
         # 预处理：将原始数据转为最终用于采样的 Prompt 列表
         self._preprocess_prompts()
@@ -56,9 +60,8 @@ class PromptDataset:
         """从本地加载 gsm8k 数据集（绕过网络问题）"""
 
        # 本地 parquet 文件路径（根据你手动下载的路径调整）
-        data_dir = "./data/gsm8k"
-        train_file = os.path.join(data_dir, "train-00000-of-00001.parquet")
-        test_file = os.path.join(data_dir, "test-00000-of-00001.parquet")
+        train_file = os.path.join(self.dataset_dir, "train-00000-of-00001.parquet")
+        test_file = os.path.join(self.dataset_dir, "test-00000-of-00001.parquet")
 
         # 校验文件是否存在
         if not os.path.exists(train_file) or not os.path.exists(test_file):
@@ -127,28 +130,40 @@ class PromptDataset:
         # 替换占位符，生成完整 R1-Zero Prompt
         return self.r1_zero_template.replace("{question}", question)
 
-    def sample_batch(self, batch_size: int) -> Tuple[List[str], List[str]]:
+    def sample_batch(self, batch_size: int , rand: bool = True) -> Tuple[List[str], List[str], List[str]]:
         """
         从 Prompt 列表中采样批次数据（对齐 GRPO 伪代码的 Sample Db 步骤）
         Args:
             batch_size: 批次大小
+            rand: 是否随机选取
         Returns:
             Tuple[List[str], List[str]].
                 questions: List[str] 采样后的 Prompt 批次
+                answers: List[str]
                 ground_truths: List[str] 采样后的 Ground Truth 批次
         """
         batch_size = min(batch_size, len(self.dataset))
-        # 无放回采样（保证批次多样性，若需放回可改用 random.choices）
-        one_batch = self.dataset.select(
-            random.sample(range(len(self.dataset)), k=batch_size)
-        )
-        return one_batch["prompt"], one_batch["ground_truth"]
+        if rand:
+            # 无放回采样（保证批次多样性，若需放回可改用 random.choices）
+            one_batch = self.dataset.select(
+                random.sample(range(len(self.dataset)), k=batch_size)
+            )
+        else:
+            end_index = min(self.sample_index + batch_size, len(self.dataset))
+            indices = list(range(self.sample_index, end_index))
+            one_batch = self.dataset.select(indices)
+            self.sample_index = end_index % len(self.dataset)
+        return one_batch["prompt"], one_batch["answer"], one_batch["ground_truth"]
 
 
 if __name__ == "__main__":
-    prompt_dataset = PromptDataset()
-    prompts, answers = prompt_dataset.sample_batch(10)
-    for prompt, answer in zip(prompts, answers):
+    prompt_dataset = PromptDataset(
+        dataset_type="test"
+    )
+    print(f"dataset size: {len(prompt_dataset.dataset)}")
+    prompts, answers, truths = prompt_dataset.sample_batch(2, False)
+    for prompt, answer, truth in zip(prompts, answers, truths):
         print(prompt)
         print(answer)
+        print(truth)
         print("--------------------------------")

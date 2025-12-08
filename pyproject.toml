@@ -31,8 +31,8 @@ package = true
 no-build-isolation-package = ["flash-attn"]
 
 
-[tool.uv.sources]
-alpaca-eval = { git = "https://github.com/nelson-liu/alpaca_eval.git", rev = "forward_kwargs_to_vllm" }
+#[tool.uv.sources]
+#alpaca-eval = { git = "https://github.com/nelson-liu/alpaca_eval.git", rev = "forward_kwargs_to_vllm" }
 
 [tool.pytest.ini_options]
 log_cli = true
