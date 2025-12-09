@@ -4,6 +4,7 @@ from torchtyping import TensorType
 from transformers import PreTrainedTokenizer, PreTrainedModel, AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import PaddingStrategy
 from .vllm_wrapper import VLLMWrapper
+from .init import train_device, eval_device
 
 
 def tokenize_prompt_and_output(
@@ -193,19 +194,21 @@ def sft_microbatch_train_step(
 
 def get_model(
     model_path: str = "./data/models/Qwen2.5-Math-1.5B",
+    no_inf: bool = False,
 ) -> Tuple[PreTrainedModel, PreTrainedTokenizer, VLLMWrapper]:
     policy = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         # attn_implementation="flash_attention_2",
+        device_map=train_device,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     # init vllm
     inf_vllm = VLLMWrapper(
         model_id=model_path,
-        device="cuda:0",
+        device=eval_device,
         seed=666,
-    )
+    ) if not no_inf else None
 
     return policy, tokenizer, inf_vllm

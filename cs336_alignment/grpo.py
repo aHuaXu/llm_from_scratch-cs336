@@ -13,8 +13,9 @@ from .gen_prompt import PromptDataset
 from .sft_helper import tokenize_prompt_and_output, get_response_log_probs, get_model
 from .grpo_helper import compute_group_normalized_rewards, grpo_microbatch_train_step
 from .drgrpo_grader import r1_zero_reward_fn
-from .init import log_init
+from .init import log_init, train_device, env_init
 
+env_init()
 logger = getLogger(__name__)
 
 class Grpo:
@@ -34,10 +35,9 @@ class Grpo:
         sampling_temperature: float = 1.0,
         sampling_min_tokens: int = 4,
         sampling_max_tokens: int = 1024,
-        epochs_per_rollout_batch: int = 1,
+        epochs_per_rollout_batch: int = 1,  # 只考虑1了，每轮数据只训练一次
         train_batch_size: int = 256,
         gradient_accumulation_steps: int = 128,
-        gpu_memory_utilization: float = 0.85,
         loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"] = "reinforce_with_baseline",
         use_std_normalization: bool = True,
     ):
@@ -100,13 +100,14 @@ class Grpo:
         })
 
     def train(self):
+        train_start_time = datetime.now()
         for step in range(self.n_grpo_steps):
             current_step = step + 1
             step_start = datetime.now()
             logger.info(f"\n=== Starting GRPO step {current_step}/{self.n_grpo_steps} ===")
 
             # Sample a batch of questions D_b from D
-            prompts, _, ground_truths = self.prompt_dataset.sample_batch(self.n_prompts_per_rollout_batch)
+            prompts, _, ground_truths = self.prompt_dataset.train_batch(self.n_prompts_per_rollout_batch)
             
             # Set the old policy model πθold ←πθ
             self.old_policy_wrapper.load_policy_into_vllm(self.policy)
@@ -166,107 +167,92 @@ class Grpo:
             )
             input_rollouts, labels, response_mask = (
                 combo["input_ids"], combo["labels"], combo["response_mask"])
-            token_duration = (datetime.now() - token_start).total_seconds()
+            tokenizer_duration = (datetime.now() - token_start).total_seconds()
             logger.info(
-                f"Step {current_step}: Tokenized {len(repeated_prompts)} prompt-response pairs in {token_duration:.2f}s | Sequence length: {input_rollouts.shape[1]}")
+                f"Step {current_step}: Tokenized {len(repeated_prompts)} prompt-response pairs in {tokenizer_duration:.2f}s | Sequence length: {input_rollouts.shape[1]}")
             wandb.log({
                 "train_step": current_step,
-                "train/tokenization_duration": token_duration,
+                "train/tokenization_duration": tokenizer_duration,
                 "train/sequence_length": input_rollouts.shape[1]
             })
 
-            epoch_losses = []
-            for epoch in range(self.epochs_per_rollout_batch):
-                epoch_start = datetime.now()
-                logger.info(f"Step {current_step}: Starting training epoch {epoch + 1}/{self.epochs_per_rollout_batch}")
+            # start train
+            epoch_start = datetime.now()
+            micro_step_losses = []
+            for micro_step in range(self.n_microbatches_per_rollout_batch):
+                micro_start = datetime.now()
+                current_micro_step = micro_step + 1
 
-                micro_step_losses = []
-                for micro_step in range(self.n_microbatches_per_rollout_batch):
-                    micro_start = datetime.now()
-                    current_micro_step = micro_step + 1
+                start_idx = micro_step * self.micro_train_batch_size
+                end_idx = start_idx + self.micro_train_batch_size
 
-                    start_idx = micro_step * self.micro_train_batch_size
-                    end_idx = start_idx + self.micro_train_batch_size
+                # prepare micro data
+                micro_x = input_rollouts[start_idx:end_idx].to(train_device)
+                micro_y = labels[start_idx:end_idx].to(train_device)
+                micro_mask = response_mask[start_idx:end_idx].to(train_device)
+                micro_rewards = raw_rewards[start_idx:end_idx].to(train_device)
+                micro_advantages = advantages[start_idx:end_idx].to(train_device)
 
-                    micro_x = input_rollouts[start_idx:end_idx]
-                    micro_y = labels[start_idx:end_idx]
-                    micro_mask = response_mask[start_idx:end_idx]
-                    micro_rewards = raw_rewards[start_idx:end_idx]
-                    micro_advantages = advantages[start_idx:end_idx]
-
-                    logger.debug(
-                        f"Step {current_step}, Epoch {epoch + 1}, Micro-step {current_micro_step}: Processing batch {start_idx}-{end_idx} (size: {self.micro_train_batch_size})")
-
-                    policy_log_probs = get_response_log_probs(
-                        model=self.policy,
-                        input_ids=micro_x,
-                        labels=micro_y,
-                    )["log_probs"]
-
-                    loss, metadata = grpo_microbatch_train_step(
-                        policy_log_probs=policy_log_probs,
-                        response_mask=micro_mask,
-                        gradient_accumulation_steps=self.gradient_accumulation_steps,
-                        loss_type=self.loss_type,
-                        raw_rewards=micro_rewards,
-                        advantages=micro_advantages,
-                        # ToDo: reinforce_with_baseline do not need
-                        # old_log_probs=old_log_probs,
-                    )
-
-                    loss_value = loss.item()
-                    micro_step_losses.append(loss_value)
-                    micro_duration = (datetime.now() - micro_start).total_seconds()
-                    logger.debug(
-                        f"Step {current_step}, Epoch {epoch + 1}, Micro-step {current_micro_step}: Loss = {loss_value:.4f} | Duration = {micro_duration:.2f}s")
-                    wandb.log({
-                        "grpo_step": current_step,
-                        "training/micro_step_loss": loss_value,
-                        "training/micro_step_duration": micro_duration,
-                        "training/epoch": epoch + 1,
-                        "training/micro_step": current_micro_step
-                    })
-
-                    # do step for each gradient_accumulation_steps
-                    if (micro_step + 1) % self.gradient_accumulation_steps == 0:
-                        self.optimizer.step()
-                        self.optimizer.zero_grad()
-                        logger.debug(
-                            f"Step {current_step}, Epoch {epoch + 1}: Optimizer step completed (gradient accumulation window finished)")
-
-                avg_epoch_loss = sum(micro_step_losses) / len(micro_step_losses) if micro_step_losses else 0.0
-                epoch_losses.append(avg_epoch_loss)
-                epoch_duration = (datetime.now() - epoch_start).total_seconds()
                 logger.info(
-                    f"Step {current_step}: Epoch {epoch + 1} completed | Avg loss: {avg_epoch_loss:.4f} | Duration: {epoch_duration:.2f}s")
+                    f"Step {current_step}, Micro-step {current_micro_step}: Processing batch {start_idx}-{end_idx} (size: {self.micro_train_batch_size})")
+
+                # compute policy log_probs
+                policy_log_probs = get_response_log_probs(
+                    model=self.policy,
+                    input_ids=micro_x,
+                    labels=micro_y,
+                )["log_probs"]
+
+                # execute micro batch train
+                loss, metadata = grpo_microbatch_train_step(
+                    policy_log_probs=policy_log_probs,
+                    response_mask=micro_mask,
+                    gradient_accumulation_steps=self.gradient_accumulation_steps,
+                    loss_type=self.loss_type,
+                    raw_rewards=micro_rewards,
+                    advantages=micro_advantages,
+                    # ToDo: reinforce_with_baseline do not need
+                    # old_log_probs=old_log_probs,
+                )
+
+                loss_value = loss.item()
+                micro_step_losses.append(loss_value)
+                micro_duration = (datetime.now() - micro_start).total_seconds()
+                logger.debug(
+                    f"Step {current_step}, Micro-step {current_micro_step}: Loss = {loss_value:.4f} | Duration = {micro_duration:.2f}s")
                 wandb.log({
                     "grpo_step": current_step,
-                    "training/epoch_loss": avg_epoch_loss,
-                    "training/epoch_duration": epoch_duration,
-                    "training/epoch_number": epoch + 1
+                    "training/micro_step_loss": loss_value,
+                    "training/micro_step_duration": micro_duration,
+                    "training/micro_step": current_micro_step
                 })
 
-            step_duration = (datetime.now() - step_start).total_seconds()
-            avg_step_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0.0
-            logger.info(f"\n=== Completed GRPO Step {current_step}/{self.n_grpo_steps} ==="
-                        f"\n  Step duration: {step_duration:.2f}s"
-                        f"\n  Avg epoch loss: {avg_step_loss:.4f}"
-                        f"\n  Learning rate: {self.optimizer.param_groups[0]['lr']:.6f}")
+                # do step for each gradient_accumulation_steps
+                if (micro_step + 1) % self.gradient_accumulation_steps == 0:
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    logger.debug(
+                        f"Step {current_step}: Optimizer step completed (gradient accumulation window finished)")
 
+            avg_epoch_loss = sum(micro_step_losses) / len(micro_step_losses) if micro_step_losses else 0.0
+            epoch_duration = (datetime.now() - epoch_start).total_seconds()
+            step_duration = (datetime.now() - step_start).total_seconds()
+            logger.info(
+                f"=== Completed GRPO Step {current_step}/{self.n_grpo_steps} === "
+                f"\n Avg loss: {avg_epoch_loss:.4f}"
+                f"\n Duration: {epoch_duration:.2f}s"
+                f"")
             wandb.log({
                 "grpo_step": current_step,
-                "grpo/step_duration": step_duration,
-                "grpo/avg_step_loss": avg_step_loss,
-                "grpo/learning_rate": self.optimizer.param_groups[0]['lr'],
-                "grpo/group_size": self.group_size,
-                "grpo/loss_type": self.loss_type
+                "training/epoch_loss": avg_epoch_loss,
+                "training/epoch_duration": epoch_duration,
+                "training/step_duration": step_duration,
             })
 
-        total_train_duration = (datetime.now() - self.train_start_time).total_seconds()
+        total_train_duration = (datetime.now() - train_start_time).total_seconds()
         logger.info(f"\n=== GRPO Training Complete ==="
                     f"\n  Total steps: {self.n_grpo_steps}"
-                    f"\n  Total duration: {total_train_duration:.2f}s ({total_train_duration / 60:.2f} mins)"
-                    f"\n  Final learning rate: {self.optimizer.param_groups[0]['lr']:.6f}")
+                    f"\n  Total duration: {total_train_duration:.2f}s ({total_train_duration / 60:.2f} mins)")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from vllm import LLM, SamplingParams
 from .vllm_wrapper import VLLMWrapper
 from .gen_prompt import PromptDataset
 from .drgrpo_grader import r1_zero_reward_fn
-from .init import env_init
+from .init import env_init, eval_device
 
 env_init()
 
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     format_accuracy, accuracy = evaluate_vllm(
         vllm_model=VLLMWrapper(
             model_id=model_path,
-            device="cuda:0",
+            device=eval_device,
         ),
         prompt_dataset=PromptDataset(
             dataset_type="test",

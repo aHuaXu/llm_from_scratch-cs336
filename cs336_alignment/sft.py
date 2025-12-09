@@ -6,7 +6,6 @@ from typing import Literal, Optional, Callable, Dict, List
 import wandb
 from torch.optim import AdamW
 from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizer, AutoModelForCausalLM
-from vllm import LLM, SamplingParams
 from .vllm_wrapper import VLLMWrapper
 from .gen_prompt import PromptDataset
 from .sft_helper import tokenize_prompt_and_output, get_response_log_probs, sft_microbatch_train_step
@@ -15,6 +14,7 @@ from .sft_helper import get_model
 from .evaluate import evaluate_vllm
 from .init import log_init, env_init
 from logging import getLogger
+from .init import train_device
 
 env_init()
 logger = getLogger(__name__)
@@ -106,7 +106,9 @@ class SFT:
 
                 # Extract micro-batch
                 micro_x, micro_y, micro_mask = (
-                    input_ids[start_idx:end_idx], labels[start_idx:end_idx], response_mask[start_idx:end_idx])
+                    input_ids[start_idx:end_idx].to(train_device),
+                    labels[start_idx:end_idx].to(train_device),
+                    response_mask[start_idx:end_idx].to(train_device))
                 logger.debug(
                     f"Step {current_train_step}/{self.n_sft_steps} | Accumulation step {accum_step}/{self.gradient_accumulation_steps}: Processing micro-batch {start_idx}-{end_idx}")
 
@@ -118,7 +120,7 @@ class SFT:
 
                 # Calculate loss for micro-batch
                 loss, metadata = sft_microbatch_train_step(
-                    log_probs=log_probs,
+                    policy_log_probs=log_probs,
                     response_mask=micro_mask,
                     gradient_accumulation_steps=self.gradient_accumulation_steps
                 )
