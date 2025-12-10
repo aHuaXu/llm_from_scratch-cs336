@@ -21,6 +21,7 @@ dependencies = [
     "wandb>=0.19.8",
     "xopen>=2.0.2",
     "torchtyping",
+    "pynvml"
 ]
 
 [tool.setuptools.packages.find]

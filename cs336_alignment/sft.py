@@ -10,7 +10,7 @@ from .vllm_wrapper import VLLMWrapper
 from .gen_prompt import PromptDataset
 from .sft_helper import tokenize_prompt_and_output, get_response_log_probs, sft_microbatch_train_step
 from .drgrpo_grader import r1_zero_reward_fn
-from .sft_helper import get_model
+from .sft_helper import get_model, print_all_gpu_memory, save_policy
 from .evaluate import evaluate_vllm
 from .init import log_init, env_init
 from logging import getLogger
@@ -27,12 +27,12 @@ class SFT:
         tokenizer: PreTrainedTokenizer,  # 文本tokenizer
         reward_fn: Callable[[str, str], Dict[str, float]] = r1_zero_reward_fn,  # (response, ground_truth) -> reward
 
-        n_sft_steps: int = 200,
-        dataset_size: int = 128,    # unique examples for SFT
+        n_sft_steps: int = 1000,
+        dataset_size: int = 512,    # unique examples for SFT
         learning_rate: float = 1e-5,
-        rollout_batch_size: int = 64,
-        validate_interval: int = 5,
-        gradient_accumulation_steps: int = 4,
+        rollout_batch_size: int = 32,
+        validate_interval: int = 20,
+        gradient_accumulation_steps: int = 8,
     ):
         self.policy = policy
         self.infer_model = infer_model
@@ -86,14 +86,15 @@ class SFT:
             # 1. Sample batch data
             prompts, answers, _ = self.train_dataset.train_batch(self.rollout_batch_size)
             logger.debug(
-                f"Step {current_train_step}/{self.n_sft_steps}: Sampled {len(prompts)} training examples from dataset")
+                f"Step {current_train_step}: Sampled {len(prompts)} training examples from dataset")
 
             # 2. Tokenization step
             tokenized_data = tokenize_prompt_and_output(prompts, answers, self.tokenizer)
             input_ids, labels, response_mask = (
                 tokenized_data["input_ids"], tokenized_data["labels"], tokenized_data["response_mask"])
             logger.debug(
-                f"Step {current_train_step}/{self.n_sft_steps}: Tokenization complete | Input sequence length: {input_ids.shape[1]}")
+                f"Step {current_train_step}: Tokenization complete | Input sequence length: {input_ids.shape[1]}")
+            # print_all_gpu_memory(f"step: {current_train_step} load train data")
 
             # 3. Gradient accumulation loop
             total_loss = 0.0
@@ -110,13 +111,17 @@ class SFT:
                     labels[start_idx:end_idx].to(train_device),
                     response_mask[start_idx:end_idx].to(train_device))
                 logger.debug(
-                    f"Step {current_train_step}/{self.n_sft_steps} | Accumulation step {accum_step}/{self.gradient_accumulation_steps}: Processing micro-batch {start_idx}-{end_idx}")
+                    f"Step {current_train_step} | "
+                    f"Accumulation step {accum_step}: Processing micro-batch {start_idx}-{end_idx}"
+                    f"device: {micro_x.device}")
+                # print_all_gpu_memory(f"step: {current_train_step} accum_step: {accum_step} prepare micro_data")
 
                 # Compute log probabilities and entropy
                 policy_res = get_response_log_probs(
                     model=self.policy, input_ids=micro_x, labels=micro_y, return_token_entropy=True
                 )
                 log_probs, entropy = policy_res["log_probs"], policy_res["token_entropy"]
+                # print_all_gpu_memory(f"step: {current_train_step} accum_step: {accum_step} compute probs")
 
                 # Calculate loss for micro-batch
                 loss, metadata = sft_microbatch_train_step(
@@ -124,13 +129,15 @@ class SFT:
                     response_mask=micro_mask,
                     gradient_accumulation_steps=self.gradient_accumulation_steps
                 )
+                # print_all_gpu_memory(f"step: {current_train_step} accum_step: {accum_step} backward")
 
                 # Accumulate metrics
                 total_loss += loss.item()
                 total_entropy += entropy.mean().item()
 
-                logger.debug(
-                    f"Step {current_train_step}/{self.n_sft_steps} | Accumulation step {accum_step}: Micro-batch loss = {loss.item():.4f} | Mean entropy = {entropy.mean().item():.4f}")
+                logger.info(
+                    f"Step {current_train_step} | Accumulation step {accum_step}: "
+                    f"Micro-batch loss = {loss.item():.4f} | Mean entropy = {entropy.mean().item():.4f}")
 
             # Calculate average metrics across accumulation steps
             avg_loss = total_loss / self.gradient_accumulation_steps
@@ -139,7 +146,7 @@ class SFT:
 
             # Log training metrics
             logger.info(
-                f"Step {current_train_step}/{self.n_sft_steps} | "
+                f"After one step train {current_train_step} | "
                 f"Average loss: {avg_loss:.4f} | "
                 f"Average entropy: {avg_entropy:.4f} | "
                 f"Step duration: {step_duration:.2f}s"
@@ -154,18 +161,24 @@ class SFT:
                 "train/learning_rate": self.optimizer.param_groups[0]['lr']
             })
 
-            # 4. Model evaluation
+            # 4. Update model parameters
+            self.optimizer.step()
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
+            self.optimizer.zero_grad()
+            logger.debug(f"Step {current_train_step}: Optimizer step completed | Gradients zeroed")
+
+            # 5. Model evaluation
             if current_train_step % self.validate_interval == 0:
                 eval_start = datetime.now()
                 eval_step_counter += 1
 
                 logger.info(
-                    f"Step {current_train_step}/{self.n_sft_steps}: Starting evaluation (eval step {eval_step_counter})...")
+                    f"Step {current_train_step}: Starting evaluation (eval step {eval_step_counter})...")
 
                 # Load current policy into inference model
                 self.infer_model.load_policy_into_vllm(self.policy)
                 logger.debug(
-                    f"Step {current_train_step}/{self.n_sft_steps}: Loaded policy model into VLLM inference wrapper")
+                    f"Step {current_train_step}: Loaded policy model into VLLM inference wrapper")
 
                 # Run evaluation
                 format_accuracy, accuracy = evaluate_vllm(self.infer_model)
@@ -188,10 +201,8 @@ class SFT:
                     "eval/corresponding_train_step": current_train_step
                 })
 
-            # 5. Update model parameters
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            logger.debug(f"Step {current_train_step}/{self.n_sft_steps}: Optimizer step completed | Gradients zeroed")
+                # save checkpoint
+                save_policy(self.policy, self.tokenizer)
 
         # Training completion
         total_training_duration = (datetime.now() - total_training_start).total_seconds()
@@ -213,6 +224,7 @@ class SFT:
 if __name__ == "__main__":
     log_init(task_name="sft")
 
+    test_model_path = "./data/models/Qwen2.5-Math-1.5B-test"
     policy, tokenizer, inf_vllm = get_model()
     wandb.watch(policy, log="all")
     logger.info("load model successfully")
@@ -222,6 +234,8 @@ if __name__ == "__main__":
         infer_model=inf_vllm,
         tokenizer=tokenizer,
     )
+    print_all_gpu_memory("init sft class")
+
     sft.train()
 
     wandb.finish()

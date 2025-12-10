@@ -230,6 +230,7 @@ class Grpo:
                 # do step for each gradient_accumulation_steps
                 if (micro_step + 1) % self.gradient_accumulation_steps == 0:
                     self.optimizer.step()
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
                     self.optimizer.zero_grad()
                     logger.debug(
                         f"Step {current_step}: Optimizer step completed (gradient accumulation window finished)")

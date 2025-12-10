@@ -7,6 +7,7 @@ from .vllm_wrapper import VLLMWrapper
 from .gen_prompt import PromptDataset
 from .drgrpo_grader import r1_zero_reward_fn
 from .init import env_init, eval_device
+from .sft_helper import get_model, print_all_gpu_memory
 
 env_init()
 
@@ -36,7 +37,7 @@ def evaluate_vllm(
     """
     total_prompts_num = 0
     format_correct_num, result_correct_num = 0, 0
-    for prompts, _, ground_truths in prompt_dataset.evaluate_batch(10):
+    for prompts, _, ground_truths in prompt_dataset.evaluate_batch(10000):
         if len(prompts) != len(ground_truths):
             raise ValueError("len(prompts) != len(ground_truths)")
 
@@ -57,15 +58,12 @@ def evaluate_vllm(
     return format_correct_num / total_prompts_num, result_correct_num / total_prompts_num
 
 if __name__ == "__main__":
+    policy, _, inf_vllm = get_model(model_path="./data/models/Qwen2.5-Math-1.5B-test")
+    print_all_gpu_memory("before load policy")
+    inf_vllm.load_policy_into_vllm(policy)
+    print_all_gpu_memory("after load policy")
     format_accuracy, accuracy = evaluate_vllm(
-        vllm_model=VLLMWrapper(
-            model_id=model_path,
-            device=eval_device,
-        ),
-        prompt_dataset=PromptDataset(
-            dataset_type="test",
-            sample_size=20
-        )
+        inf_vllm
     )
 
     print(f"format_accuracy: {format_accuracy}, accuracy: {accuracy}")

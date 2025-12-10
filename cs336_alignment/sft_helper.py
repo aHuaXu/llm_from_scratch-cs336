@@ -5,6 +5,7 @@ from transformers import PreTrainedTokenizer, PreTrainedModel, AutoModelForCausa
 from transformers.utils import PaddingStrategy
 from .vllm_wrapper import VLLMWrapper
 from .init import train_device, eval_device
+from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
 
 def tokenize_prompt_and_output(
@@ -191,11 +192,24 @@ def sft_microbatch_train_step(
     }
     return microbatch_loss, metadata
 
+def print_gpu_memory(device_id=0, operate_type: str = ""):
+    nvmlInit()
+    handle = nvmlDeviceGetHandleByIndex(device_id)
+    mem_info = nvmlDeviceGetMemoryInfo(handle)
+    print(f"After {operate_type} GPU {device_id} 总显存: {mem_info.total/1024**3:.2f} GB")
+    print(f"已用显存: {mem_info.used/1024**3:.2f} GB")
+    print(f"可用显存: {mem_info.free/1024**3:.2f} GB")
+
+def print_all_gpu_memory(operate_type: str = ""):
+    train_physical_device, eval_physical_device = torch.device("cuda:7"), torch.device("cuda:6")
+    print_gpu_memory(train_physical_device.index, operate_type)
+    print_gpu_memory(eval_physical_device.index, operate_type)
 
 def get_model(
     model_path: str = "./data/models/Qwen2.5-Math-1.5B",
     no_inf: bool = False,
 ) -> Tuple[PreTrainedModel, PreTrainedTokenizer, VLLMWrapper]:
+    # print_all_gpu_memory("init")
     policy = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
@@ -204,11 +218,20 @@ def get_model(
     )
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
+    # print_all_gpu_memory("load policy")
     # init vllm
     inf_vllm = VLLMWrapper(
         model_id=model_path,
-        device=eval_device,
-        seed=666,
+        device=eval_device
     ) if not no_inf else None
+    # print_all_gpu_memory("init vllm")
 
     return policy, tokenizer, inf_vllm
+
+def save_policy(
+    policy: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    dir_path: str = "./data/models/Qwen2.5-Math-1.5B-test",
+):
+    policy.save_pretrained(dir_path)
+    tokenizer.save_pretrained(dir_path)

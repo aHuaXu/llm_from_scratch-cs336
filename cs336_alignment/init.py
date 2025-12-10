@@ -4,6 +4,7 @@ import os
 import wandb
 from datetime import datetime
 from logging import Logger, getLogger
+import torch
 
 def log_init(
     task_name: str,
@@ -33,5 +34,5 @@ def env_init():
     os.environ["CUDA_VISIBLE_DEVICES"] = "6, 7"  # 子进程内屏蔽其他 GPU
     # os.environ["VLLM_ATTENTION_BACKEND"] = "torch"
 
-train_device = "cuda:1"
-eval_device = "cuda:0"
+train_device = torch.device("cuda:1")
+eval_device = torch.device("cuda:0")

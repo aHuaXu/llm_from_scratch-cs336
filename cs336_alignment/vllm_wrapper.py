@@ -43,13 +43,34 @@ class VLLMWrapper:
         return self.inf_vllm
 
     def load_policy_into_vllm(self, policy: PreTrainedModel):
-        """原 load_policy_into_vinf_vllm 函数逻辑，加载策略模型权重到vLLM"""
-        if self.inf_vllm is None:
-            raise RuntimeError("请先调用 init_vllm 初始化 vLLM 实例")
-
-        state_dict = policy.state_dict()
         llm_model = self.inf_vllm.llm_engine.model_executor.driver_worker.model_runner.model
-        llm_model.load_weights(state_dict.items())
+        # 获取vLLM的GPU设备（比如 cuda:0/cuda:1）
+        vllm_device = next(llm_model.parameters()).device
+        # 获取vLLM的参数类型（99%是 float16，少数是 bf16）
+        vllm_dtype = next(llm_model.parameters()).dtype
+
+        # 2. 处理policy权重：跨GPU迁移 + bf16→vLLM指定类型（float16/bf16）
+        state_dict = policy.state_dict()
+        processed_state_dict = {}
+        for k, v in state_dict.items():
+            if v is None:
+                continue
+
+            # 方案1A: 通过CPU中转进行安全转换
+            if v.dtype != vllm_dtype:
+                # 先将bfloat16转到CPU的float32，再转到目标类型
+                v_cpu_float32 = v.cpu().float()
+                processed_v = v_cpu_float32.to(vllm_device).to(vllm_dtype)
+            else:
+                processed_v = v.to(vllm_device, non_blocking=True)
+
+            processed_state_dict[k] = processed_v
+
+        # 使用load_state_dict而不是load_weights
+        llm_model.load_weights(processed_state_dict.items())
+
+        # 3. 清理临时显存（可选，避免OOM）
+        del state_dict, processed_state_dict
 
     def generate(self, prompts: List[str], sampling_params: SamplingParams):
         return self.inf_vllm.generate(prompts, sampling_params, use_tqdm=True)
