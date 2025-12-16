@@ -50,8 +50,8 @@ def evaluate_vllm(
             prompt = output.prompt
             generated_text = output.outputs[0].text
             reward_dict = reward_fn(generated_text, label)
-            print(f"prompt: {prompt!r},\noutput: {generated_text!r},\nlabel: {label!r},"
-              f"\nreward: {reward_dict}")
+            # print(f"prompt: {prompt!r},\noutput: {generated_text!r},\nlabel: {label!r},"
+            #   f"\nreward: {reward_dict}")
             format_correct_num += reward_dict["format_reward"]
             result_correct_num += reward_dict["reward"]
 

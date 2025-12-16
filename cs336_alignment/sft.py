@@ -49,6 +49,8 @@ class SFT:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.micro_batch_size = rollout_batch_size // gradient_accumulation_steps
 
+        self.eval_step_counter = 0
+
         self.train_dataset = PromptDataset(
             sample_size=dataset_size,
         )
@@ -69,6 +71,42 @@ class SFT:
             "micro_batch_size": self.micro_batch_size,
         })
 
+    def evaluate(self, current_train_step: int):
+        eval_start = datetime.now()
+        self.eval_step_counter += 1
+
+        logger.info(
+            f"Step {current_train_step}: Starting evaluation (eval step {self.eval_step_counter})...")
+
+        # Load current policy into inference model
+        self.infer_model.load_policy_into_vllm(self.policy)
+        logger.debug(
+            f"Step {current_train_step}: Loaded policy model into VLLM inference wrapper")
+
+        # Run evaluation
+        format_accuracy, accuracy = evaluate_vllm(self.infer_model)
+        eval_duration = (datetime.now() - eval_start).total_seconds()
+
+        # Log evaluation results
+        logger.info(
+            f"Evaluation {self.eval_step_counter} complete | "
+            f"Format accuracy: {format_accuracy:.4f} | "
+            f"Accuracy: {accuracy:.4f} | "
+            f"Evaluation duration: {eval_duration:.2f}s"
+        )
+
+        # Log to wandb (removed run check)
+        wandb.log({
+            "eval_step": self.eval_step_counter,
+            "eval/format_accuracy": format_accuracy,
+            "eval/accuracy": accuracy,
+            "eval/duration": eval_duration,
+            "eval/corresponding_train_step": current_train_step
+        })
+
+        # save checkpoint
+        save_policy(self.policy, self.tokenizer)
+
     def train(self):
         # Initialize training state
         self.policy.train()
@@ -76,7 +114,7 @@ class SFT:
             f"Starting SFT training for {self.n_sft_steps} steps | Batch size: {self.rollout_batch_size} | Gradient accumulation steps: {self.gradient_accumulation_steps}")
 
         # Track evaluation steps separately
-        eval_step_counter = 0
+        self.eval_step_counter = 0
         total_training_start = datetime.now()
 
         for step in range(self.n_sft_steps):
@@ -169,40 +207,7 @@ class SFT:
 
             # 5. Model evaluation
             if current_train_step % self.validate_interval == 0:
-                eval_start = datetime.now()
-                eval_step_counter += 1
-
-                logger.info(
-                    f"Step {current_train_step}: Starting evaluation (eval step {eval_step_counter})...")
-
-                # Load current policy into inference model
-                self.infer_model.load_policy_into_vllm(self.policy)
-                logger.debug(
-                    f"Step {current_train_step}: Loaded policy model into VLLM inference wrapper")
-
-                # Run evaluation
-                format_accuracy, accuracy = evaluate_vllm(self.infer_model)
-                eval_duration = (datetime.now() - eval_start).total_seconds()
-
-                # Log evaluation results
-                logger.info(
-                    f"Evaluation {eval_step_counter} complete | "
-                    f"Format accuracy: {format_accuracy:.4f} | "
-                    f"Accuracy: {accuracy:.4f} | "
-                    f"Evaluation duration: {eval_duration:.2f}s"
-                )
-
-                # Log to wandb (removed run check)
-                wandb.log({
-                    "eval_step": eval_step_counter,
-                    "eval/format_accuracy": format_accuracy,
-                    "eval/accuracy": accuracy,
-                    "eval/duration": eval_duration,
-                    "eval/corresponding_train_step": current_train_step
-                })
-
-                # save checkpoint
-                save_policy(self.policy, self.tokenizer)
+                self.evaluate(current_train_step)
 
         # Training completion
         total_training_duration = (datetime.now() - total_training_start).total_seconds()
@@ -210,14 +215,14 @@ class SFT:
             f"SFT training completed! | "
             f"Total steps: {self.n_sft_steps} | "
             f"Total duration: {total_training_duration:.2f}s ({total_training_duration / 60:.2f} mins) | "
-            f"Total evaluations performed: {eval_step_counter}"
+            f"Total evaluations performed: {self.eval_step_counter}"
         )
 
         # Final wandb log (removed run check)
         wandb.log({
             "train/training_complete": True,
             "train/total_duration_seconds": total_training_duration,
-            "train/total_evaluations": eval_step_counter
+            "train/total_evaluations": self.eval_step_counter
         })
 
 

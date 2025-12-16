@@ -32,7 +32,9 @@ def compute_group_normalized_rewards(
         response.
         metadata your choice of other statistics to log (e.g. mean, std, max/min of rewards).
     """
-    rollout_batch_size = len(rollout_responses)
+    # for res, gt in zip(rollout_responses, repeated_ground_truths):
+    #     reward = reward_fn(res, gt)
+    #     print(f"response: {res}\ntruth:{gt}\nreward: {reward}")
     
     raw_rewards = torch.Tensor([reward_fn(response, ground_truth)['reward'] for response, ground_truth in zip(rollout_responses, repeated_ground_truths)])
     
@@ -42,6 +44,7 @@ def compute_group_normalized_rewards(
     if normalize_by_std:
         rewards_grouped_std = rewards_grouped.std(dim=-1, keepdim=True)
         advantages = (rewards_grouped - rewards_grouped_mean) / (rewards_grouped_std + advantage_eps)
+        # print(f"rewards_grouped_mean: {rewards_grouped_mean}, rewards_grouped_std: {rewards_grouped_std}, advantages: {advantages}")
     else:
         advantages = rewards_grouped - rewards_grouped_mean
         

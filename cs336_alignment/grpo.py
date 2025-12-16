@@ -10,10 +10,11 @@ from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizer, Au
 from vllm import LLM, SamplingParams
 from .vllm_wrapper import VLLMWrapper
 from .gen_prompt import PromptDataset
-from .sft_helper import tokenize_prompt_and_output, get_response_log_probs, get_model
+from .sft_helper import tokenize_prompt_and_output, get_response_log_probs, get_model, save_policy
 from .grpo_helper import compute_group_normalized_rewards, grpo_microbatch_train_step
 from .drgrpo_grader import r1_zero_reward_fn
 from .init import log_init, train_device, env_init
+from .evaluate import evaluate_vllm
 
 env_init()
 logger = getLogger(__name__)
@@ -40,6 +41,7 @@ class Grpo:
         gradient_accumulation_steps: int = 128,
         loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"] = "reinforce_with_baseline",
         use_std_normalization: bool = True,
+        validate_interval: int = 10,
     ):
         # assert
         assert train_batch_size % gradient_accumulation_steps == 0, "train_batch_size must be divisible by gradient_accumulation_steps"
@@ -64,6 +66,9 @@ class Grpo:
         self.loss_type = loss_type
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.use_std_normalization = use_std_normalization
+        self.validate_interval = validate_interval
+
+        self.eval_step_counter = 0
 
         self.sampling_params = SamplingParams(
             temperature=sampling_temperature,
@@ -72,6 +77,7 @@ class Grpo:
             n=group_size,
             stop=["</answer>"],
             top_p=1.0,
+            include_stop_str_in_output=True,
         )
         self.prompt_dataset = PromptDataset()
         self.optimizer = AdamW(
@@ -99,34 +105,68 @@ class Grpo:
             "n_prompts_per_rollout_batch": self.n_prompts_per_rollout_batch,
         })
 
+    def evaluate(self, current_train_step: int):
+        eval_start = datetime.now()
+        self.eval_step_counter += 1
+
+        logger.info(
+            f"Step {current_train_step}: Starting evaluation (eval step {self.eval_step_counter})...")
+
+        # Load current policy into inference model
+        self.old_policy_wrapper.load_policy_into_vllm(self.policy)
+        logger.debug(
+            f"Step {current_train_step}: Loaded policy model into VLLM inference wrapper")
+
+        # Run evaluation
+        format_accuracy, accuracy = evaluate_vllm(self.old_policy_wrapper)
+        eval_duration = (datetime.now() - eval_start).total_seconds()
+
+        # Log evaluation results
+        logger.info(
+            f"Evaluation {self.eval_step_counter} complete | "
+            f"Format accuracy: {format_accuracy:.4f} | "
+            f"Accuracy: {accuracy:.4f} | "
+            f"Evaluation duration: {eval_duration:.2f}s"
+        )
+
+        # Log to wandb (removed run check)
+        wandb.log({
+            "eval_step": self.eval_step_counter,
+            "eval/format_accuracy": format_accuracy,
+            "eval/accuracy": accuracy,
+            "eval/duration": eval_duration,
+            "eval/corresponding_train_step": current_train_step
+        })
+
+        # save checkpoint
+        save_policy(self.policy, self.tokenizer, "./data/models/Qwen2.5-Math-1.5B-grpo")
+
+
     def train(self):
         train_start_time = datetime.now()
+        self.eval_step_counter = 0
         for step in range(self.n_grpo_steps):
             current_step = step + 1
             step_start = datetime.now()
             logger.info(f"\n=== Starting GRPO step {current_step}/{self.n_grpo_steps} ===")
 
-            # Sample a batch of questions D_b from D
+            # 1. Sample a batch of questions D_b from D
             prompts, _, ground_truths = self.prompt_dataset.train_batch(self.n_prompts_per_rollout_batch)
             
-            # Set the old policy model πθold ←πθ
-            self.old_policy_wrapper.load_policy_into_vllm(self.policy)
-            
-            # Sample G outputs for each question q ∈ D_b
+            # 2. Sample G outputs for each question q ∈ D_b
             gen_start = datetime.now()
             outputs = self.old_policy_wrapper.generate(prompts, self.sampling_params)
             gen_duration = (datetime.now() - gen_start).total_seconds()
 
             repeated_prompts: List[str] = []
             responses: List[str] = []
-            old_log_probs: List[List[float]] = []  # ToDo: reinforce_with_baseline do not need
             for completion in outputs:
                 repeated_prompts.extend([completion.prompt for _ in completion.outputs])
                 responses.extend([res.text for res in completion.outputs])
-                old_log_probs.extend([res.log_probs for res in completion.outputs])
 
             logger.info(
-                f"Step {current_step}: Generated {len(responses)} responses ({self.group_size} per prompt) in {gen_duration:.2f}s")
+                f"Step {current_step}: Generated {len(responses)} "
+                f"responses in {gen_duration:.2f}s")
             wandb.log({
                 "train_step": current_step,
                 "train/response_count": len(responses),
@@ -134,7 +174,7 @@ class Grpo:
                 "train/responses_per_prompt": self.group_size
             })
 
-            # Compute rewards and advantages for each sampled output o(i) by running reward function R(q, o(i))
+            # 3. Compute rewards and advantages for each sampled output o(i) by running reward function R(q, o(i))
             reward_start = datetime.now()
             advantages, raw_rewards, metadata = compute_group_normalized_rewards(
                 reward_fn=self.reward_fn,
@@ -150,7 +190,7 @@ class Grpo:
             avg_reward = raw_rewards.mean().item()
             avg_advantage = advantages.mean().item()
             logger.info(
-                f"Step {current_step}: Computed rewards/advantages in {reward_duration:.2f}s | Avg reward: {avg_reward:.4f} | Avg advantage: {avg_advantage:.4f}")
+                f"Step {current_step}: Computed rewards/advantages in {reward_duration:.2f}s | Avg reward: {avg_reward:.4f}")
             wandb.log({
                 "train_step": current_step,
                 "train/reward_computation_duration": reward_duration,
@@ -158,7 +198,7 @@ class Grpo:
                 "train/avg_advantage": advantages.mean().item()
             })
 
-            # tokenizer inputs
+            # 4. tokenizer inputs
             token_start = datetime.now()
             combo = tokenize_prompt_and_output(
                 prompt_strs=repeated_prompts,
@@ -176,7 +216,7 @@ class Grpo:
                 "train/sequence_length": input_rollouts.shape[1]
             })
 
-            # start train
+            # 5. Start train
             epoch_start = datetime.now()
             micro_step_losses = []
             for micro_step in range(self.n_microbatches_per_rollout_batch):
@@ -232,7 +272,7 @@ class Grpo:
                     self.optimizer.step()
                     torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
                     self.optimizer.zero_grad()
-                    logger.debug(
+                    logger.info(
                         f"Step {current_step}: Optimizer step completed (gradient accumulation window finished)")
 
             avg_epoch_loss = sum(micro_step_losses) / len(micro_step_losses) if micro_step_losses else 0.0
@@ -250,6 +290,13 @@ class Grpo:
                 "training/step_duration": step_duration,
             })
 
+            # Set the old policy model πθold ←πθ
+            self.old_policy_wrapper.load_policy_into_vllm(self.policy)
+
+            # Evaluate the policy
+            if current_step % self.validate_interval == 0:
+                self.evaluate(current_step)
+
         total_train_duration = (datetime.now() - train_start_time).total_seconds()
         logger.info(f"\n=== GRPO Training Complete ==="
                     f"\n  Total steps: {self.n_grpo_steps}"
@@ -260,7 +307,7 @@ if __name__ == "__main__":
     log_init(task_name="grpo")
 
     # init policy
-    model_path = "./data/models/Qwen2.5-Math-1.5B"
+    model_path = "./data/models/Qwen2.5-Math-1.5B-test"
     policy, tokenizer, inf_vllm = get_model(model_path)
     wandb.watch(policy, log="all")
     logger.info("load model successfully")
