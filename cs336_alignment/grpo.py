@@ -233,7 +233,7 @@ class Grpo:
                 micro_rewards = raw_rewards[start_idx:end_idx].to(train_device)
                 micro_advantages = advantages[start_idx:end_idx].to(train_device)
 
-                logger.info(
+                logger.debug(
                     f"Step {current_step}, Micro-step {current_micro_step}: Processing batch {start_idx}-{end_idx} (size: {self.micro_train_batch_size})")
 
                 # compute policy log_probs
