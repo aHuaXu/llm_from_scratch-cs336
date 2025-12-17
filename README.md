@@ -28,3 +28,6 @@ Initially, all tests should fail with `NotImplementedError`s.
 To connect your implementation to the tests, complete the
 functions in [./tests/adapters.py](./tests/adapters.py).
 
+
+## Experiment
+- grpo: https://wandb.ai/1530784218-fudan-university-school-of-management/cs336_assignment5/runs/9tyzciyc?nw=nwuser1530784218
