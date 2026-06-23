@@ -1,0 +1,84 @@
+@startuml UserInfoSyncFlow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam sequenceArrowThickness 2
+skinparam roundcorner 20
+
+title 用户信息同步执行流程
+
+participant "Client" as C
+participant "executeUserInfoSync" as E
+participant "UserInfoSyncExecutor" as U
+participant "GLB Service" as G
+
+== 流程1: GLB不可写 ==
+C -> E: 调用executeUserInfoSync()
+E -> G: glbCanWrite()
+G --> E: false
+E -> U: ExecuteUserInfoUpdate()
+U --> E: userInfo, nil
+E --> C: userInfo, nil
+
+== 流程2: GLB不可读 ==
+C -> E: 调用executeUserInfoSync()
+E -> G: glbCanWrite()
+G --> E: true
+E -> G: glbCanRead()
+G --> E: false
+E -> U: ExecuteUserInfoUpdate()
+U --> E: userInfo, nil
+E -> U: ExecuteGlbSync() (非阻塞)
+U --> E: nil
+E --> C: userInfo, nil
+
+== 流程3: GLB可读可写 - 成功 ==
+C -> E: 调用executeUserInfoSync()
+E -> G: glbCanWrite()
+G --> E: true
+E -> G: glbCanRead()
+G --> E: true
+E -> U: ExecuteGlbSync()
+U --> E: nil
+E -> U: ExecuteUserInfoUpdate()
+U --> E: userInfo, nil
+E --> C: userInfo, nil
+
+== 流程4: GLB可读可写 - GLB同步失败 ==
+C -> E: 调用executeUserInfoSync()
+E -> G: glbCanWrite()
+G --> E: true
+E -> G: glbCanRead()
+G --> E: true
+E -> U: ExecuteGlbSync()
+U --> E: error
+E --> C: nil, "ExecuteGlbSync failed"
+
+== 流程5: GLB可读可写 - 用户信息更新失败 ==
+C -> E: 调用executeUserInfoSync()
+E -> G: glbCanWrite()
+G --> E: true
+E -> G: glbCanRead()
+G --> E: true
+E -> U: ExecuteGlbSync()
+U --> E: nil
+E -> U: ExecuteUserInfoUpdate()
+U --> E: nil, error
+
+alt 超时错误
+    E --> C: nil, "ExecuteUserInfoUpdate failed (timeout)"
+else 其他错误
+    E -> U: ExecuteGlbRollback()
+    U --> E: rollbackError
+    E --> C: nil, "ExecuteUserInfoUpdate failed"
+end
+
+note right of E
+    关键决策点：
+    1. GLB可写性检查
+    2. GLB可读性检查
+    3. 错误类型判断（超时vs其他）
+    4. 回滚策略
+end note
+
+@enduml
+
