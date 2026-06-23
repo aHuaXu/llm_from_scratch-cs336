@@ -1,0 +1,27 @@
+# config.yaml
+total_iteration: 800
+lr: 0.01  # 初始学习率（余弦调度会覆盖此值，这里仅作为优化器初始化用）
+vocab_size: 10000
+context_length: 256
+
+# Transformer 模型参数
+model:
+  num_layers: 4
+  num_heads: 16
+  d_model: 512
+  d_ff: 1344
+  rope_theta: 10000
+
+# 数据和路径参数
+data:
+  data_path: "./data/train_tokens.bin"
+  batch_size: 128
+  checkpoint_path: "./data/train.ckpt"
+
+# 训练参数
+training:
+  max_l2_norm: 10.0
+  max_lr: 0.001        # 余弦调度的最大学习率
+  min_lr: 0.0004      # 余弦调度的最小学习率
+  warmup_iters: 100  # 注意：原代码中参数名是 warnup_iters（拼写错误），这里修正为 warmup_iters
+  cosine_cycle_iters: 10000
